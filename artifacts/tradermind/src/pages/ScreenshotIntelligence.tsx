@@ -19,7 +19,7 @@ import {
 } from 'lucide-react';
 import { db, ChartScreenshot, ScreenshotCollection, VisualPattern, ScreenshotGroup, Trade } from '../db/database';
 import {
-  getAllChartScreenshots, saveChartScreenshot, updateChartScreenshot, deleteChartScreenshot,
+  getAllChartScreenshots, backfillScreenshotLibrary, saveChartScreenshot, updateChartScreenshot, deleteChartScreenshot,
   getAllCollections, saveCollection, updateCollection, deleteCollection, addToCollection, removeFromCollection,
   getAllPatterns, savePattern, updatePattern, deletePattern,
   getAllGroups, saveGroup, updateGroup, deleteGroup,
@@ -194,7 +194,7 @@ function GalleryTab({ allTrades, onRefresh }: { allTrades: Trade[]; onRefresh: (
 
   const { data: screenshots = [] } = useQuery<ChartScreenshot[]>({
     queryKey: ['chart-screenshots'],
-    queryFn: getAllChartScreenshots,
+    queryFn: async () => { await backfillScreenshotLibrary(); return getAllChartScreenshots(); },
   });
 
   const { data: collections = [] } = useQuery<ScreenshotCollection[]>({
@@ -782,7 +782,7 @@ function GroupsTab() {
 
   const { data: allChartSS = [] } = useQuery<ChartScreenshot[]>({
     queryKey: ['chart-screenshots'],
-    queryFn: getAllChartScreenshots,
+    queryFn: async () => { await backfillScreenshotLibrary(); return getAllChartScreenshots(); },
   });
 
   const createGroup = async () => {
@@ -937,7 +937,7 @@ function PatternsTab({ allTrades }: { allTrades: Trade[] }) {
   });
   const { data: allChartSS = [] } = useQuery<ChartScreenshot[]>({
     queryKey: ['chart-screenshots'],
-    queryFn: getAllChartScreenshots,
+    queryFn: async () => { await backfillScreenshotLibrary(); return getAllChartScreenshots(); },
   });
 
   const createPattern = async () => {
@@ -1139,7 +1139,7 @@ function CollectionsTab() {
   });
   const { data: allChartSS = [] } = useQuery<ChartScreenshot[]>({
     queryKey: ['chart-screenshots'],
-    queryFn: getAllChartScreenshots,
+    queryFn: async () => { await backfillScreenshotLibrary(); return getAllChartScreenshots(); },
   });
 
   const createCollection = async () => {

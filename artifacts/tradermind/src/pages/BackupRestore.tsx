@@ -17,6 +17,7 @@ import {
 import { toast } from "sonner";
 import { appStorage } from "../services/storageService";
 import { HardDrive } from "lucide-react";
+import { VoiceTypingButton } from "../components/ui/VoiceTypingButton";
 
 // ─────────────────────────────────────────────
 // ثوابت و انواع
@@ -116,17 +117,45 @@ export default function BackupRestore() {
   };
 
   // ── Excel Export state
-  const [exportingExcel, setExportingExcel] = useState(false);
 
-  const handleExcelExport = async () => {
-    setExportingExcel(true);
+  const [exportingJournalWord, setExportingJournalWord] = useState(false);
+  const [journalFrom, setJournalFrom] = useState('');
+  const [journalTo, setJournalTo] = useState('');
+
+  const [exportingJournalExcel, setExportingJournalExcel] = useState(false);
+  const handleJournalExcelExport = async () => {
+    setExportingJournalExcel(true);
     try {
-      await backupService.exportToExcel();
-      toast.success('فایل Excel با موفقیت دانلود شد');
-    } catch {
-      toast.error('خطا در ساخت فایل Excel. لطفاً دوباره تلاش کنید.');
+      const count = await backupService.exportJournalExcel({
+        from: journalFrom ? new Date(`${journalFrom}T00:00:00`).getTime() : undefined,
+        to: journalTo ? new Date(`${journalTo}T23:59:59.999`).getTime() : undefined,
+      });
+      if (count === 0) toast.warning('در این بازه معامله‌ای پیدا نشد؛ گزارش خالی ساخته شد.');
+      else toast.success(`گزارش Excel با ${count.toLocaleString('fa-IR')} معامله ساخته شد.`);
+    } catch (cause) {
+      console.error('[JournalExcel] export failed', cause);
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      toast.error(`ساخت گزارش Excel ناموفق بود: ${detail}`.slice(0, 220));
     } finally {
-      setExportingExcel(false);
+      setExportingJournalExcel(false);
+    }
+  };
+
+  const handleJournalWordExport = async () => {
+    setExportingJournalWord(true);
+    try {
+      const count = await backupService.exportJournalWord({
+        from: journalFrom ? new Date(`${journalFrom}T00:00:00`).getTime() : undefined,
+        to: journalTo ? new Date(`${journalTo}T23:59:59.999`).getTime() : undefined,
+      });
+      if (count === 0) toast.warning('در این بازه سشنی پیدا نشد؛ گزارش خالی ساخته شد.');
+      else toast.success(`گزارش ژورنال با ${count.toLocaleString('fa-IR')} سشن ساخته شد.`);
+    } catch (cause) {
+      console.error('[JournalWord] export failed', cause);
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      toast.error(`ساخت گزارش Word ژورنال ناموفق بود: ${detail}`.slice(0, 220));
+    } finally {
+      setExportingJournalWord(false);
     }
   };
 
@@ -342,33 +371,43 @@ export default function BackupRestore() {
         </CardContent>
       </Card>
 
-       {/* ──── خروجی سازگار با Excel ──── */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <Layers className="w-5 h-5 text-emerald-500" />
-             خروجی Spreadsheet / Excel
+            <FileArchive className="h-5 w-5 text-emerald-500" />
+            گزارش‌گیری (Word و Excel)
           </CardTitle>
           <CardDescription>
-             تمام داده‌ها را در یک فایل Excel چندبرگه دریافت کنید؛ شامل معاملات، حساب‌ها، باکس‌ها، تحلیل‌ها، ژورنال‌ها و تصاویر.
+            این فایل‌ها گزارش هستند، نه پشتیبان. برای پشتیبان‌گیری و بازیابی از بخش‌های بالا استفاده کنید.
           </CardDescription>
         </CardHeader>
-        <CardContent>
-          <div className="flex items-center justify-between p-4 border rounded-lg bg-muted/20">
-            <div>
-               <p className="font-medium">دانلود Spreadsheet کامل</p>
-               <p className="text-sm text-muted-foreground">۶ شیت داده‌ای با پشتیبانی از تصویر و Excel</p>
-            </div>
-            <Button
-              onClick={handleExcelExport}
-              disabled={exportingExcel}
-              variant="outline"
-              className="flex items-center gap-2 shrink-0 border-emerald-500/40 text-emerald-500 hover:bg-emerald-500/10"
-            >
-              {exportingExcel
-                ? <><RefreshCcw className="w-4 h-4 animate-spin" /> در حال ساخت...</>
-                 : <><Download className="w-4 h-4" /> دانلود Excel</>
-              }
+        <CardContent className="space-y-4 rounded-lg border bg-muted/20 p-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="space-y-1.5 text-sm">
+              <span className="text-muted-foreground">از تاریخ (اختیاری)</span>
+              <input type="date" value={journalFrom} onChange={event => setJournalFrom(event.target.value)} className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm" data-testid="input-journal-word-from" />
+            </label>
+            <label className="space-y-1.5 text-sm">
+              <span className="text-muted-foreground">تا تاریخ (اختیاری)</span>
+              <input type="date" value={journalTo} onChange={event => setJournalTo(event.target.value)} className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm" data-testid="input-journal-word-to" />
+            </label>
+          </div>
+          <div className="space-y-2 rounded-md border bg-background p-3">
+            <p className="font-medium">گزارش Word</p>
+            <p className="text-xs text-muted-foreground">برای هر سشن: جدول توضیحات کلی، جدول تحلیل هر تایم‌فریم (با عکس‌هایش)، و بعد برای هر معامله جدول تریگر و زیر آن عکس‌های همان معامله.</p>
+            <Button onClick={() => void handleJournalWordExport()} disabled={exportingJournalWord} className="w-full sm:w-auto" data-testid="button-export-journal-word">
+              {exportingJournalWord
+                ? <><RefreshCcw className="ml-2 h-4 w-4 animate-spin" />در حال ساخت…</>
+                : <><Download className="ml-2 h-4 w-4" />دانلود گزارش Word</>}
+            </Button>
+          </div>
+          <div className="space-y-2 rounded-md border bg-background p-3">
+            <p className="font-medium">گزارش Excel</p>
+            <p className="text-xs text-muted-foreground">همهٔ اطلاعات معاملات (تاریخ و ساعت ورود و خروج، قیمت‌ها، حد ضرر و سود، تریگر، نتیجه و …)، سشن‌ها، تحلیل‌ها و تریگرها؛ بدون عکس.</p>
+            <Button onClick={() => void handleJournalExcelExport()} disabled={exportingJournalExcel} variant="outline" className="w-full sm:w-auto" data-testid="button-export-journal-excel">
+              {exportingJournalExcel
+                ? <><RefreshCcw className="ml-2 h-4 w-4 animate-spin" />در حال ساخت…</>
+                : <><Download className="ml-2 h-4 w-4" />دانلود گزارش Excel</>}
             </Button>
           </div>
         </CardContent>
@@ -744,12 +783,13 @@ export default function BackupRestore() {
               <p className="text-destructive font-medium">این عملیات قابل بازگشت نیست. ابتدا از داده‌های خود پشتیبان بگیرید.</p>
               <div className="mt-4">
                 <label className="text-sm font-medium">برای تأیید، «پاک شود» را تایپ کنید:</label>
+                <div className="flex h-5 justify-end mt-1"><VoiceTypingButton /></div>
                 <input
                   type="text"
                   value={resetConfirmText}
                   onChange={e => setResetConfirmText(e.target.value)}
                   placeholder="پاک شود"
-                  className="mt-2 w-full h-9 rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                  className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
                   dir="rtl"
                 />
               </div>

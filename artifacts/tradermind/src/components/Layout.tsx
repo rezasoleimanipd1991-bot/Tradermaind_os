@@ -1,4 +1,6 @@
 import { Sidebar } from "./Sidebar";
+import { NavRail } from "./shell/NavRail";
+import { AppHeader } from "./shell/AppHeader";
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -7,18 +9,21 @@ interface LayoutProps {
 export function Layout({ children }: LayoutProps) {
   return (
     <div className="min-h-screen bg-background">
+      {/* موبایل: نوار بالا + Drawer + Bottom Nav (در Sidebar) | دسکتاپ: ریل شناور + هدر */}
       <Sidebar />
+      <NavRail />
       {/*
-        دسکتاپ: padding-right برای sidebar (RTL) + بدون نوار بالا/پایین
+        دسکتاپ: فضای ریل شناور در سمت راست (RTL) رزرو می‌شود (--tm-rail-space).
         موبایل: padding-top برای نوار بالا + padding-bottom برای bottom nav
       */}
       <main
-        className="md:pr-64 pt-14 md:pt-0 min-h-[100dvh] flex flex-col"
+        className="tm-main pt-14 md:pt-0 min-h-[100dvh] flex flex-col"
         style={{ paddingBottom: 'calc(56px + env(safe-area-inset-bottom))' }}
       >
-        {/* روی دسکتاپ padding bottom را حذف می‌کنیم */}
-        <style>{`@media (min-width: 768px) { main { padding-bottom: 0 !important; } }`}</style>
-        <div className="tradermind-page-shell flex-1 p-4 md:p-8 max-w-7xl mx-auto w-full">
+        <div className="hidden md:block tm-header-slot">
+          <AppHeader />
+        </div>
+        <div className="tradermind-page-shell flex-1 p-4 md:px-6 md:py-5 max-w-[96rem] mx-auto w-full">
           {children}
         </div>
       </main>

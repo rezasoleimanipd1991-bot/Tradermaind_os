@@ -7,7 +7,6 @@
 import { db, Trade, defaultPostTradeReview } from '../db/database';
 import { tradeService } from './tradeService';
 import { normalizeImportedTradeFields } from '../lib/tradeClassification';
-import { parseTradingDateTimeInput } from '../lib/tradingTime';
 
 // ─── Column mapping ──────────────────────────────────────────────────────────
 
@@ -26,10 +25,7 @@ export const IMPORT_FIELDS = [
   { key: 'result',       label: 'نتیجه (win/loss/…)',   required: false },
   { key: 'openedAt',     label: 'تاریخ/ساعت ورود',      required: false },
   { key: 'closedAt',     label: 'تاریخ/ساعت خروج',      required: false },
-  { key: 'fees',         label: 'سایر هزینه‌ها (Fee)',   required: false },
-  { key: 'commission',   label: 'کمیسیون',              required: false },
-  { key: 'spread',       label: 'اسپرد (هزینه)',         required: false },
-  { key: 'swap',         label: 'سواپ (علامت‌دار؛ منفی = هزینه)', required: false },
+  { key: 'fees',         label: 'کمیسیون',              required: false },
   { key: 'market',       label: 'بازار',                required: false },
   { key: 'tags',         label: 'تگ‌ها',               required: false },
   { key: 'notes',        label: 'یادداشت',              required: false },
@@ -114,25 +110,25 @@ function parseCSV(text: string): { headers: string[]; rows: Record<string, strin
 const AUTO_MAP_HINTS: Record<string, ImportFieldKey> = {
   symbol: 'symbol', ticker: 'symbol', pair: 'symbol', instrument: 'symbol',
   direction: 'direction', side: 'direction', type: 'direction', buy_sell: 'direction',
-  entry: 'entryPrice', entry_price: 'entryPrice', entryprice: 'entryPrice', open: 'entryPrice', open_price: 'entryPrice', openprice: 'entryPrice',
-  exit: 'exitPrice', exit_price: 'exitPrice', exitprice: 'exitPrice', close: 'exitPrice', close_price: 'exitPrice', closeprice: 'exitPrice',
+  entry: 'entryPrice', entry_price: 'entryPrice', open: 'entryPrice', open_price: 'entryPrice',
+  exit: 'exitPrice', exit_price: 'exitPrice', close: 'exitPrice', close_price: 'exitPrice',
   sl: 'stopLoss', stop: 'stopLoss', stop_loss: 'stopLoss', stoploss: 'stopLoss',
-  tp: 'takeProfit', target: 'takeProfit', take_profit: 'takeProfit', takeprofit: 'takeProfit', takeprofitprice: 'takeProfit',
-  pnl: 'profitLoss', profit: 'profitLoss', profitloss: 'profitLoss', profit_loss: 'profitLoss', loss: 'profitLoss', pl: 'profitLoss', p_l: 'profitLoss',
-  size: 'positionSize', positionsize: 'positionSize', volume: 'positionSize', qty: 'positionSize', quantity: 'positionSize',
+  tp: 'takeProfit', target: 'takeProfit', take_profit: 'takeProfit', takeprofitprice: 'takeProfit',
+  pnl: 'profitLoss', profit: 'profitLoss', loss: 'profitLoss', pl: 'profitLoss', p_l: 'profitLoss',
+  size: 'positionSize', volume: 'positionSize', qty: 'positionSize', quantity: 'positionSize',
   r: 'rMultiple', r_multiple: 'rMultiple', rmultiple: 'rMultiple',
-  risk_pct: 'riskPercentage', risk_percent: 'riskPercentage', riskpercentage: 'riskPercentage',
-  risk_amount: 'riskAmount', riskamount: 'riskAmount', risk: 'riskAmount',
+  risk_pct: 'riskPercentage', risk_percent: 'riskPercentage',
+  risk_amount: 'riskAmount', risk: 'riskAmount',
   result: 'result', outcome: 'result', win_loss: 'result',
-  date: 'openedAt', openedat: 'openedAt', open_time: 'openedAt', entry_time: 'openedAt', datetime: 'openedAt',
-  close_time: 'closedAt', closedat: 'closedAt', exit_time: 'closedAt', exit_date: 'closedAt',
-  fee: 'fees', fees: 'fees', commission: 'commission', comm: 'commission', spread: 'spread', swap: 'swap',
+  date: 'openedAt', open_time: 'openedAt', entry_time: 'openedAt', datetime: 'openedAt',
+  close_time: 'closedAt', exit_time: 'closedAt', exit_date: 'closedAt',
+  fee: 'fees', commission: 'fees', swap: 'fees',
   market: 'market', asset_class: 'market',
   tag: 'tags', tags: 'tags', labels: 'tags',
   note: 'notes', notes: 'notes', comment: 'notes', comments: 'notes',
-  session: 'tradingSession', trading_session: 'tradingSession', tradingsession: 'tradingSession',
-  setup: 'setupType', setup_type: 'setupType', setuptype: 'setupType',
-  reason: 'entryReason', entry_reason: 'entryReason', entryreason: 'entryReason',
+  session: 'tradingSession', trading_session: 'tradingSession',
+  setup: 'setupType', setup_type: 'setupType',
+  reason: 'entryReason', entry_reason: 'entryReason',
   lesson: 'lesson', learning: 'lesson',
 };
 
@@ -174,14 +170,6 @@ function normaliseResult(val: string): Trade['result'] | null {
 
 function parseTimestamp(val: string): number | null {
   if (!val) return null;
-  // «YYYY-MM-DD HH:mm[:ss]» بدون ناحیهٔ زمانی (Z یا ±hh:mm) بر اساس تنظیم مبنای زمانی
-  // (ساعت دستگاه یا بروکر). مقادیر ISO با Z (مثل خروجی CSV خود برنامه) همان UTC می‌مانند.
-  const wall = val.trim().match(/^(\d{4})[-./](\d{1,2})[-./](\d{1,2})[ T]+(\d{1,2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?$/);
-  if (wall) {
-    const iso = `${wall[1]}-${wall[2].padStart(2, '0')}-${wall[3].padStart(2, '0')}T${wall[4].padStart(2, '0')}:${wall[5]}`;
-    const ts = parseTradingDateTimeInput(iso);
-    if (!Number.isNaN(ts)) return ts + (wall[6] ? Number(wall[6]) * 1000 : 0);
-  }
   const d = new Date(val);
   if (!isNaN(d.getTime())) return d.getTime();
   // تلاش با فرمت‌های رایج
@@ -228,24 +216,18 @@ function validateRecord(
 
 // ─── Duplicate detection ──────────────────────────────────────────────────────
 
-type DuplicateCandidate = Pick<Trade, 'symbol' | 'direction' | 'entryPrice' | 'openedAt'> & {
-  id: string | null;
-};
-
 async function detectDuplicate(
   symbol: string,
   direction: 'long' | 'short',
   entryPrice: number,
   openedAt: number | null,
-  existingTrades: readonly DuplicateCandidate[],
+  existingTrades: Trade[],
 ): Promise<{ isDuplicate: boolean; duplicateTradeId: string | null }> {
   for (const t of existingTrades) {
     const sameSymbol = t.symbol.toLowerCase() === symbol.toLowerCase();
     const sameDir = t.direction === direction;
-    // تلورانس بسیار کم (۰٫۰۰۱٪): فقط تفاوت گردکردن قیمت، نه معاملهٔ متفاوت
-    const sameEntry = Math.abs(t.entryPrice - entryPrice) <= Math.abs(entryPrice) * 0.00001;
-    // بدون زمان ورود نمی‌توان با اطمینان تکراری بودن را تشخیص داد
-    const sameDate = openedAt != null && Math.abs(t.openedAt - openedAt) < 60_000; // ±1 min
+    const sameEntry = Math.abs(t.entryPrice - entryPrice) < entryPrice * 0.001; // 0.1% tolerance
+    const sameDate = openedAt ? Math.abs(t.openedAt - openedAt) < 60_000 : true; // ±1 min
     if (sameSymbol && sameDir && sameEntry && sameDate) {
       return { isDuplicate: true, duplicateTradeId: t.id };
     }
@@ -261,7 +243,6 @@ export async function previewCSV(
 ): Promise<ImportPreview> {
   const { headers, rows } = parseCSV(text);
   const existingTrades = await db.trades.toArray();
-  const knownTrades: DuplicateCandidate[] = [...existingTrades];
   const parsedRows: ParsedRecord[] = [];
 
   for (const raw of rows) {
@@ -274,22 +255,16 @@ export async function previewCSV(
     const { errors, warnings } = validateRecord(mapped);
     let isDuplicate = false;
     let duplicateTradeId: string | null = null;
-    let candidateForBatch: DuplicateCandidate | null = null;
     if (!errors.length && mapped.symbol && mapped.direction && mapped.entryPrice) {
       const dir = normaliseDirection(mapped.direction);
       const entry = parseFloat(mapped.entryPrice);
       const ts = mapped.openedAt ? parseTimestamp(mapped.openedAt) : null;
       if (dir) {
-        const symbol = mapped.symbol.trim();
-        const dup = await detectDuplicate(symbol, dir, entry, ts, knownTrades);
+        const dup = await detectDuplicate(mapped.symbol, dir, entry, ts, existingTrades);
         isDuplicate = dup.isDuplicate;
         duplicateTradeId = dup.duplicateTradeId;
-        if (!dup.isDuplicate && ts !== null) {
-          candidateForBatch = { id: null, symbol, direction: dir, entryPrice: entry, openedAt: ts };
-        }
       }
     }
-    if (candidateForBatch) knownTrades.push(candidateForBatch);
     parsedRows.push({ raw, mapped, errors, warnings, isDuplicate, duplicateTradeId });
   }
 
@@ -337,15 +312,11 @@ export async function importCSV(
         stopLoss: parseOptionalNumber(m.stopLoss) ?? 0,
         takeProfit: parseOptionalNumber(m.takeProfit),
         positionSize: parseOptionalNumber(m.positionSize),
-        // سود ناخالص؛ کمیسیون/اسپرد/Fee هزینه‌اند و سواپ علامت‌دار است؛ همه جدا ذخیره می‌شوند
         profitLoss: parseOptionalNumber(m.profitLoss),
         rMultiple: parseOptionalNumber(m.rMultiple),
         riskPercentage: parseOptionalNumber(m.riskPercentage),
         riskAmount: parseOptionalNumber(m.riskAmount),
         fees: parseOptionalNumber(m.fees),
-        commission: parseOptionalNumber(m.commission),
-        spread: parseOptionalNumber(m.spread),
-        swap: parseOptionalNumber(m.swap),
         result: normaliseResult(m.result ?? '') ?? 'open',
         status: 'open',
         openedAt,
@@ -436,7 +407,7 @@ export async function importJSON(
     return { imported: 0, skipped: 0, errors: ['خطای parse JSON'] };
   }
 
-  const existingTrades: DuplicateCandidate[] = [...await db.trades.toArray()];
+  const existingTrades = await db.trades.toArray();
 
   for (const r of records) {
     const symbol = String(r.symbol ?? '').toUpperCase().trim();
@@ -466,10 +437,6 @@ export async function importJSON(
         rMultiple: r.rMultiple != null ? parseOptionalNumber(String(r.rMultiple)) : null,
         riskPercentage: r.riskPercentage != null ? parseOptionalNumber(String(r.riskPercentage)) : null,
         riskAmount: r.riskAmount != null ? parseOptionalNumber(String(r.riskAmount)) : null,
-        fees: r.fees != null ? parseOptionalNumber(String(r.fees)) : null,
-        commission: r.commission != null ? parseOptionalNumber(String(r.commission)) : null,
-        spread: r.spread != null ? parseOptionalNumber(String(r.spread)) : null,
-        swap: r.swap != null ? parseOptionalNumber(String(r.swap)) : null,
         result: normaliseResult(String(r.result ?? '')) ?? 'open',
         status: r.status ? String(r.status) as Trade['status'] : 'open',
         openedAt,
@@ -485,16 +452,9 @@ export async function importJSON(
         tags: r.tags ? (Array.isArray(r.tags) ? JSON.stringify(r.tags) : String(r.tags)) : '[]',
         emotions: r.emotions ? (Array.isArray(r.emotions) ? JSON.stringify(r.emotions) : String(r.emotions)) : '[]',
       };
-      const createdTrade = await tradeService.createTrade({
+      await tradeService.createTrade({
         ...importedTrade,
         ...normalizeImportedTradeFields(importedTrade),
-      });
-      existingTrades.push({
-        id: createdTrade.id,
-        symbol: createdTrade.symbol,
-        direction: createdTrade.direction,
-        entryPrice: createdTrade.entryPrice,
-        openedAt: createdTrade.openedAt,
       });
       imported++;
     } catch (e) {
@@ -572,20 +532,12 @@ export function parseMT4HTMLReport(html: string): MT4ParseResult {
   const colSymbol   = findCol('symbol', 'item');
   const colType     = findCol('type', 'direction');
   const colVolume   = findCol('volume', 'size', 'lots');
-  const colOpenTime = findCol('open time') !== -1
-    ? findCol('open time')
-    : findCol('time', 'open');
+  const colOpenTime = findCol('open time', 'time', 'open');
   const colOpenPx   = findCol('open price', 'price');
   const colSL       = findCol('s/l', 'sl', 'stop loss');
   const colTP       = findCol('t/p', 'tp', 'take profit');
-  // در گزارش MT4 هر دو ستون زمان فقط «Time» نام دارند؛ دومی زمان بسته شدن است
-  const timeCols = headers.map((h, i) => (h === 'time' ? i : -1)).filter(i => i >= 0);
-  const colCloseTime= findCol('close time') !== -1
-    ? findCol('close time')
-    : (timeCols.length >= 2 ? timeCols[timeCols.length - 1] : -1);
-  const lastPriceCol = headers.findLastIndex ? headers.findLastIndex(h => h.includes('price')) : -1;
-  // اگر فقط یک ستون قیمت وجود دارد، قیمت خروج نداریم (نباید با قیمت ورود یکی شود)
-  const colClosePx  = lastPriceCol === colOpenPx ? -1 : lastPriceCol;
+  const colCloseTime= findCol('close time');
+  const colClosePx  = headers.findLastIndex ? headers.findLastIndex(h => h.includes('price')) : -1;
   const colProfit   = findCol('profit');
   const colComm     = findCol('commission', 'comm');
   const colSwap     = findCol('swap');
@@ -622,29 +574,23 @@ export function parseMT4HTMLReport(html: string): MT4ParseResult {
 
     if (!symbol || !openPx) continue;
 
-    // تبدیل تاریخ MT4 (2024.01.15 10:30) به timestamp مطابق تنظیم «مبنای زمانی»:
-    // زمان‌های گزارش MT بر پایهٔ ساعت بروکر هستند، نه ساعت دستگاه.
+    // تبدیل تاریخ MT4 (2024.01.15 10:30) به ISO
     const parseMTDate = (d: string) => {
       if (!d) return null;
-      const m = d.match(/(\d{4})[.\-/](\d{2})[.\-/](\d{2})[ T]+(\d{1,2}):(\d{2})/);
-      if (!m) return null;
-      const iso = `${m[1]}-${m[2]}-${m[3]}T${m[4].padStart(2, '0')}:${m[5]}`;
-      const t = parseTradingDateTimeInput(iso);
-      return Number.isNaN(t) ? null : t;
+      const iso = d.replace(/(\d{4})\.(\d{2})\.(\d{2})/, '$1-$2-$3');
+      const t = new Date(iso).getTime();
+      return isNaN(t) ? null : t;
     };
 
     const openedAt  = parseMTDate(openTime) ?? Date.now();
     const closedAt  = parseMTDate(closeTime);
-
-    // قرارداد محاسباتی: profitLoss = سود ناخالص (ستون Profit)؛ کمیسیون و سواپ جدا ذخیره
-    // می‌شوند و فقط یک بار توسط getNetPnl اعمال می‌شوند (سواپ علامت‌دار است).
-    const grossProfit = profit !== null && Number.isFinite(profit) ? profit : null;
-    const commission  = Math.abs(comm);
-    const netProfit   = grossProfit !== null ? grossProfit - commission + swap : null;
+    const netProfit = profit !== null ? profit + comm + swap : null;
     const result    = netProfit === null ? 'open'
       : netProfit > 0 ? 'win'
       : netProfit < 0 ? 'loss'
       : 'breakeven';
+
+    const fees = Math.abs(comm) + Math.abs(swap);
 
     const importedTrade: Partial<Trade> = {
       symbol,
@@ -653,14 +599,12 @@ export function parseMT4HTMLReport(html: string): MT4ParseResult {
       status: 'open',
       result,
       entryPrice: openPx,
-      exitPrice: closePx !== null && Number.isFinite(closePx) ? closePx : null,
+      exitPrice: closePx ?? null,
       stopLoss: sl ?? openPx * (direction === 'long' ? 0.99 : 1.01),
       takeProfit: tp ?? null,
-      positionSize: volume !== null && Number.isFinite(volume) ? volume : null,
-      profitLoss: grossProfit,
-      fees: null,
-      commission: commission > 0 ? commission : null,
-      swap: swap !== 0 ? swap : null,
+      positionSize: volume ?? null,
+      profitLoss: netProfit,
+      fees: fees > 0 ? fees : null,
       openedAt,
       closedAt: closedAt ?? null,
       notes: `وارد شده از گزارش MT4/MT5`,
@@ -691,7 +635,7 @@ export async function exportTradesAsCSV(): Promise<string> {
     'id', 'symbol', 'market', 'direction', 'status', 'result',
     'entryPrice', 'exitPrice', 'stopLoss', 'takeProfit',
     'positionSize', 'riskPercentage', 'riskAmount', 'rMultiple',
-    'profitLoss', 'fees', 'commission', 'spread', 'swap', 'openedAt', 'closedAt',
+    'profitLoss', 'fees', 'commission', 'spread', 'openedAt', 'closedAt',
     'tradingSession', 'setupType', 'entryReason', 'lesson', 'notes', 'tags',
   ];
 
@@ -709,7 +653,7 @@ export async function exportTradesAsCSV(): Promise<string> {
     t.id, t.symbol, t.market ?? '', t.direction, t.status, t.result,
     t.entryPrice, t.exitPrice ?? '', t.stopLoss, t.takeProfit ?? '',
     t.positionSize ?? '', t.riskPercentage ?? '', t.riskAmount ?? '', t.rMultiple ?? '',
-    t.profitLoss ?? '', t.fees ?? '', t.commission ?? '', t.spread ?? '', t.swap ?? '', dateStr(t.openedAt), dateStr(t.closedAt),
+    t.profitLoss ?? '', t.fees ?? '', t.commission ?? '', t.spread ?? '', dateStr(t.openedAt), dateStr(t.closedAt),
     t.tradingSession ?? '', t.setupType ?? '', t.entryReason ?? '', t.lesson ?? '',
     t.notes ?? '', (() => { try { return JSON.parse(t.tags ?? '[]').join(';'); } catch { return ''; } })(),
   ].map(escapeCSV).join(','));

@@ -4,7 +4,7 @@
  */
 
 import { Trade } from '../db/database';
-import { avg, median, stdDev, isWin, isLoss, isClosed, getNetPnl, getResolvedR } from '../lib/tradeHelpers';
+import { avg, median, stdDev, isWin, isLoss, isClosed, getNetPnl } from '../lib/tradeHelpers';
 import { getTradingDateKey, getTradingDateParts, getTradingMonthKey } from '../lib/tradingTime';
 
 // ─────────────────────────────────────────────────────────────────
@@ -51,8 +51,9 @@ export function tradeRiskPct(t: Trade): number | null {
 }
 
 export function tradeRMultiple(t: Trade): number | null {
-  // R ذخیره‌شده، وگرنه سود «خالص» ÷ ریسک مالی (سود صفر هم معتبر است)
-  return getResolvedR(t);
+  if (t.rMultiple !== null && t.rMultiple !== undefined) return t.rMultiple;
+  if (t.profitLoss && t.riskAmount && t.riskAmount > 0) return t.profitLoss / t.riskAmount;
+  return null;
 }
 
 /** کدام روز هفته UTC+3:30 (تهران) — 0=شنبه...6=جمعه */
@@ -78,9 +79,7 @@ export function weekKey(ts: number): string {
   const d = new Date(Date.UTC(p.year, p.month, p.day));
   const day = d.getUTCDay() || 7;
   d.setUTCDate(d.getUTCDate() - day + 1);
-  // کلید را مستقیم از اجزای UTC می‌سازیم؛ عبور از getTradingDateKey در منطقه‌های زمانی
-  // منفی (مثل آمریکا) تاریخ را یک روز عقب می‌برد.
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+  return getTradingDateKey(d.getTime());
 }
 
 export const SESSION_LABELS: Record<string, string> = {
@@ -149,10 +148,10 @@ export function getDailyRiskExposure(
 ): DailyRiskExposure {
   const dayTrades = trades.filter(t => dateStr(t.openedAt) === dateStr_);
   const closed = dayTrades.filter(isClosed);
-  const pnls = closed.map(getNetPnl).filter((v): v is number => v !== null);
+  const pnls = closed.filter(t => t.profitLoss !== null).map(t => t.profitLoss!);
   const risks = dayTrades.filter(t => t.riskPercentage !== null).map(t => t.riskPercentage!);
   const amts = dayTrades.filter(t => t.riskAmount !== null).map(t => t.riskAmount!);
-  const losses = closed.map(getNetPnl).filter((v): v is number => v !== null && v < 0);
+  const losses = closed.filter(t => (t.profitLoss ?? 0) < 0).map(t => t.profitLoss!);
   const maxRisk = profile?.maxRiskPct ?? null;
   const violations = maxRisk !== null ? dayTrades.filter(t => (t.riskPercentage ?? 0) > maxRisk).length : 0;
   return {
@@ -197,13 +196,11 @@ export function getWeeklyRiskExposures(trades: Trade[], profile: RiskProfileData
     byWeek.get(wk)!.push(t);
   });
   const maxRisk = profile?.maxRiskPct ?? null;
-  return [...byWeek.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([wk, wt0]) => {
-    // رصد روند ریسک نیازمند ترتیب زمانی است (ورودی ممکن است جدیدترین-اول باشد)
-    const wt = [...wt0].sort((a, b) => a.openedAt - b.openedAt);
+  return [...byWeek.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([wk, wt]) => {
     const risks = wt.filter(t => t.riskPercentage !== null).map(t => t.riskPercentage!);
     const amts = wt.filter(t => t.riskAmount !== null).map(t => t.riskAmount!);
-    const pnls = wt.map(getNetPnl).filter((v): v is number => v !== null);
-    const losses = wt.map(getNetPnl).filter((v): v is number => v !== null && v < 0);
+    const pnls = wt.filter(t => t.profitLoss !== null).map(t => t.profitLoss!);
+    const losses = wt.filter(t => (t.profitLoss ?? 0) < 0).map(t => t.profitLoss!);
     const violations = maxRisk !== null ? wt.filter(t => (t.riskPercentage ?? 0) > maxRisk).length : 0;
     // رصد افزایش ریسک طی هفته
     let escalation = false;
@@ -253,7 +250,7 @@ export function getRiskByDayOfWeek(trades: Trade[], profile: RiskProfileData | n
     const rs = dt.filter(t => tradeRMultiple(t) !== null).map(t => tradeRMultiple(t)!);
     const closed = dt.filter(isClosed);
     const wins = closed.filter(isWin).length;
-    const losses = dt.map(getNetPnl).filter((v): v is number => v !== null && v < 0);
+    const losses = dt.filter(t => (t.profitLoss ?? 0) < 0).map(t => t.profitLoss!);
     const violations = maxRisk !== null ? dt.filter(t => (t.riskPercentage ?? 0) > maxRisk).length : 0;
     return {
       day,
@@ -300,7 +297,7 @@ export function getRiskBySession(trades: Trade[], profile: RiskProfileData | nul
     const rs = st.filter(t => tradeRMultiple(t) !== null).map(t => tradeRMultiple(t)!);
     const closed = st.filter(isClosed);
     const wins = closed.filter(isWin).length;
-    const losses = st.map(getNetPnl).filter((v): v is number => v !== null && v < 0);
+    const losses = st.filter(t => (t.profitLoss ?? 0) < 0).map(t => t.profitLoss!);
     const violations = maxRisk !== null ? st.filter(t => (t.riskPercentage ?? 0) > maxRisk).length : 0;
     return {
       session: sess,

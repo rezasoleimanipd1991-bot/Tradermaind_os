@@ -110,6 +110,7 @@ export interface MTFRelationship {
 
 export interface TradeScreenshot {
   id: string;
+  libraryScreenshotId?: string;
   label: string;
   dataUrl: string; // original — NEVER overwrite
   type: ScreenshotType;

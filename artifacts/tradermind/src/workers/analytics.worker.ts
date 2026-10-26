@@ -7,14 +7,10 @@
  * ارتباط: postMessage → Worker → Result → React State
  */
 
-import type { Trade } from '../db/database';
-import { isWin, isClosed, getNetPnl, getCloseTime, getResolvedR, avg, median, stdDev } from '../lib/tradeHelpers';
+import { Trade } from '../db/database';
+import { isWin, isLoss, isClosed } from '../lib/tradeHelpers';
 import { getTradingDateParts } from '../lib/tradingTime';
 import type { TradingTimeConfig } from '../lib/tradingTime';
-import { computeExpectancy } from '../core/metrics/expectancy';
-import { computeProfitFactor } from '../core/metrics/profitFactor';
-import { computeRiskMetrics } from '../core/metrics/riskMetrics';
-import { computeMaxDrawdown } from '../core/metrics/pnl';
 
 // ── Message Types ─────────────────────────────────────────────────────────────
 
@@ -80,38 +76,46 @@ export interface StatisticsResult {
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-/** مقدار بحرانی t دو‌دامنه ۹۵٪ برای df کوچک؛ برای df بزرگ ≈ ۱٫۹۶ */
-const T_95: Record<number, number> = {
-  1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262, 10: 2.228,
-  11: 2.201, 12: 2.179, 13: 2.160, 14: 2.145, 15: 2.131, 16: 2.120, 17: 2.110, 18: 2.101, 19: 2.093, 20: 2.086,
-  21: 2.080, 22: 2.074, 23: 2.069, 24: 2.064, 25: 2.060, 26: 2.056, 27: 2.052, 28: 2.048, 29: 2.045, 30: 2.042,
-};
-function tCritical95(df: number): number {
-  if (df <= 0) return Number.NaN;
-  if (df <= 30) return T_95[df];
-  if (df <= 60) return 2.0;
-  return 1.96;
+function avg(arr: number[]): number | null {
+  return arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : null;
 }
 
-/** بهترین گروه: ترجیحاً با حداقل نمونه ۳، بر اساس winRate و سپس تعداد */
-function pickBest<T extends { winRate: number | null; count: number }>(items: T[]): T | null {
-  const withData = items.filter(i => i.count > 0 && i.winRate !== null);
-  if (!withData.length) return null;
-  const pool = withData.filter(i => i.count >= 3);
-  const candidates = pool.length ? pool : withData;
-  return [...candidates].sort((a, b) => (b.winRate! - a.winRate!) || (b.count - a.count))[0];
+function median(arr: number[]): number | null {
+  if (!arr.length) return null;
+  const s = [...arr].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+function stdDev(arr: number[]): number | null {
+  const m = avg(arr);
+  if (m === null || arr.length < 2) return null;
+  const variance = arr.reduce((s, v) => s + Math.pow(v - m, 2), 0) / (arr.length - 1);
+  return Math.sqrt(variance);
 }
 
 // ── Computation Functions ─────────────────────────────────────────────────────
 
 function computeEdge(trades: Trade[], timeConfig?: TradingTimeConfig): EdgeAnalyticsResult {
   const closed = trades.filter(isClosed);
+  const wins = closed.filter(isWin);
+  const losses = closed.filter(isLoss);
   const n = closed.length;
-  const winRate = n > 0 ? closed.filter(isWin).length / n : null;
+  const winRate = n > 0 ? wins.length / n : null;
 
-  const exp = computeExpectancy(closed);
-  const pf = computeProfitFactor(closed);
-  const avgR = avg(closed.map(getResolvedR).filter((r): r is number => r !== null));
+  const Rs = closed.filter(t => t.rMultiple !== null).map(t => t.rMultiple!);
+  const winRs = wins.filter(t => t.rMultiple !== null).map(t => t.rMultiple!);
+  const lossRs = losses.filter(t => t.rMultiple !== null).map(t => t.rMultiple!);
+  const avgR = avg(Rs);
+  const lossRate = n > 0 ? losses.length / n : null;
+  const avgWinR = avg(winRs);
+  const avgLossR = avg(lossRs);
+  const expectancy = winRate !== null && lossRate !== null && avgWinR !== null && avgLossR !== null
+    ? winRate * avgWinR + lossRate * avgLossR : null;
+
+  const totalWin = wins.reduce((s, t) => s + Math.max(0, t.profitLoss ?? 0), 0);
+  const totalLoss = Math.abs(losses.reduce((s, t) => s + Math.min(0, t.profitLoss ?? 0), 0));
+  const profitFactor = totalLoss > 0 ? totalWin / totalLoss : null;
 
   // By symbol
   const symbolMap = new Map<string, Trade[]>();
@@ -119,13 +123,16 @@ function computeEdge(trades: Trade[], timeConfig?: TradingTimeConfig): EdgeAnaly
     if (!symbolMap.has(t.symbol)) symbolMap.set(t.symbol, []);
     symbolMap.get(t.symbol)!.push(t);
   }
-  const allSymbols = [...symbolMap.entries()].map(([symbol, ts]) => ({
-    symbol,
-    winRate: ts.length > 0 ? ts.filter(isWin).length / ts.length : null,
-    count: ts.length,
-  }));
-  const bestSymbol = pickBest(allSymbols)?.symbol ?? null;
-  const bySymbol = [...allSymbols].sort((a, b) => b.count - a.count).slice(0, 10);
+  const bySymbol = [...symbolMap.entries()]
+    .map(([symbol, ts]) => ({
+      symbol,
+      winRate: ts.length > 0 ? ts.filter(isWin).length / ts.length : null,
+      count: ts.length,
+    }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 10);
+
+  const bestSymbol = bySymbol.find(s => (s.winRate ?? 0) > 0)?.symbol ?? null;
 
   // By session
   const sessionMap = new Map<string, Trade[]>();
@@ -134,70 +141,60 @@ function computeEdge(trades: Trade[], timeConfig?: TradingTimeConfig): EdgeAnaly
     if (!sessionMap.has(s)) sessionMap.set(s, []);
     sessionMap.get(s)!.push(t);
   }
-  const bySession = [...sessionMap.entries()].map(([session, ts]) => ({
-    session,
-    winRate: ts.length > 0 ? ts.filter(isWin).length / ts.length : null,
-    count: ts.length,
-  }));
-  const knownSessions = bySession.filter(s => s.session !== 'unknown');
-  const bestSession = (pickBest(knownSessions) ?? pickBest(bySession))?.session ?? null;
+  const bySession = [...sessionMap.entries()]
+    .map(([session, ts]) => ({
+      session,
+      winRate: ts.length > 0 ? ts.filter(isWin).length / ts.length : null,
+      count: ts.length,
+    }));
+
+  const bestSession = bySession.sort((a, b) => (b.winRate ?? 0) - (a.winRate ?? 0))[0]?.session ?? null;
 
   // Best day of week
   const DAYS = ['یکشنبه', 'دوشنبه', 'سه‌شنبه', 'چهارشنبه', 'پنجشنبه', 'جمعه', 'شنبه'];
-  const dayStats = DAYS.map((day, i) => {
+  const dayWins = DAYS.map((d, i) => {
     const dt = closed.filter(t => getTradingDateParts(t.openedAt, timeConfig).dayOfWeek === i);
-    return { day, count: dt.length, winRate: dt.length > 0 ? dt.filter(isWin).length / dt.length : null };
+    return { day: d, winRate: dt.length > 0 ? dt.filter(isWin).length / dt.length : null };
   });
-  const bestDayOfWeek = pickBest(dayStats)?.day ?? null;
+  const bestDayOfWeek = dayWins.sort((a, b) => (b.winRate ?? 0) - (a.winRate ?? 0))[0]?.day ?? null;
 
-  return {
-    winRate,
-    expectancy: exp.expectancy,
-    profitFactor: pf.profitFactor,
-    avgR,
-    bestSymbol,
-    bestSession,
-    bestDayOfWeek,
-    bySymbol,
-    bySession,
-  };
+  return { winRate, expectancy, profitFactor, avgR, bestSymbol, bestSession, bestDayOfWeek, bySymbol, bySession };
 }
 
 function computePerformance(trades: Trade[]): PerformanceResult {
-  // سود/زیان خالص، به ترتیب زمان بسته شدن
-  const closed = trades
-    .filter(isClosed)
-    .map(t => ({ t, net: getNetPnl(t) }))
-    .filter((x): x is { t: Trade; net: number } => x.net !== null)
-    .sort((a, b) => getCloseTime(a.t) - getCloseTime(b.t));
+  const closed = trades.filter(isClosed).filter(t => t.profitLoss !== null).sort((a, b) => a.openedAt - b.openedAt);
+  const wins = closed.filter(isWin);
+  const losses = closed.filter(isLoss);
 
-  let equity = 0;
+  let peak = 0, equity = 0, maxDD = 0;
   const pnlCurve: { index: number; cumulative: number }[] = [];
   for (let i = 0; i < closed.length; i++) {
-    equity += closed[i].net;
+    equity += closed[i].profitLoss!;
+    if (equity > peak) peak = equity;
+    const dd = peak - equity;
+    if (dd > maxDD) maxDD = dd;
     pnlCurve.push({ index: i + 1, cumulative: equity });
   }
 
   // Consecutive wins/losses
   let maxCW = 0, maxCL = 0, cw = 0, cl = 0;
-  for (const { net } of closed) {
-    if (net > 0) { cw++; cl = 0; maxCW = Math.max(maxCW, cw); }
-    else if (net < 0) { cl++; cw = 0; maxCL = Math.max(maxCL, cl); }
+  for (const t of closed) {
+    if (isWin(t)) { cw++; cl = 0; maxCW = Math.max(maxCW, cw); }
+    else if (isLoss(t)) { cl++; cw = 0; maxCL = Math.max(maxCL, cl); }
     else { cw = 0; cl = 0; }
   }
 
-  const winPnls = closed.map(x => x.net).filter(v => v > 0);
-  const lossPnls = closed.map(x => x.net).filter(v => v < 0);
-  const drawdown = computeMaxDrawdown(trades);
+  const winPnls = wins.map(t => t.profitLoss!);
+  const lossPnls = losses.map(t => t.profitLoss!);
 
   return {
     totalPnl: equity,
-    maxDrawdown: drawdown.absolute,
-    maxDrawdownPct: drawdown.percentage,
+    maxDrawdown: maxDD,
+    maxDrawdownPct: peak > 0 ? (maxDD / peak) * 100 : null,
     avgWin: avg(winPnls),
     avgLoss: avg(lossPnls),
-    largestWin: winPnls.length ? winPnls.reduce((m, v) => (v > m ? v : m), winPnls[0]) : null,
-    largestLoss: lossPnls.length ? lossPnls.reduce((m, v) => (v < m ? v : m), lossPnls[0]) : null,
+    largestWin: winPnls.length ? Math.max(...winPnls) : null,
+    largestLoss: lossPnls.length ? Math.min(...lossPnls) : null,
     consecutiveWins: maxCW,
     consecutiveLosses: maxCL,
     pnlCurve,
@@ -206,50 +203,65 @@ function computePerformance(trades: Trade[]): PerformanceResult {
 
 function computeRisk(trades: Trade[]): RiskResult {
   const closed = trades.filter(isClosed);
-  const risks = closed
-    .filter(t => typeof t.riskPercentage === 'number' && Number.isFinite(t.riskPercentage))
-    .map(t => t.riskPercentage as number);
-  const m = computeRiskMetrics(closed);
+  const risks = closed.filter(t => t.riskPercentage !== null).map(t => t.riskPercentage!);
+  const Rs = closed.filter(t => t.rMultiple !== null).map(t => t.rMultiple!);
+
+  const avgR = avg(Rs);
+  const avgRisk = avg(risks);
+  const sdR = stdDev(Rs);
+  const sharpeRatio = avgR !== null && sdR !== null && sdR > 0 ? avgR / sdR : null;
+
+  const wins = closed.filter(isWin);
+  const losses = closed.filter(isLoss);
+  const winRate = closed.length > 0 ? wins.length / closed.length : null;
+  const avgWinR = avg(wins.filter(t => t.rMultiple !== null).map(t => t.rMultiple!));
+  const avgLossR = avg(losses.filter(t => t.rMultiple !== null).map(t => Math.abs(t.rMultiple!)));
+  const kellyPct = winRate !== null && avgWinR !== null && avgLossR !== null && avgLossR > 0
+    ? (winRate / avgLossR - (1 - winRate) / avgWinR) * 100 : null;
+
+  const riskConsistency = avgRisk && stdDev(risks) ? (stdDev(risks)! / avgRisk) * 100 : null;
+
+  const buckets = new Map<string, number>();
+  for (const r of Rs) {
+    const bucket = (Math.round(r * 2) / 2).toFixed(1);
+    buckets.set(bucket, (buckets.get(bucket) ?? 0) + 1);
+  }
+  const rMultipleDistribution = [...buckets.entries()]
+    .sort((a, b) => parseFloat(a[0]) - parseFloat(b[0]))
+    .map(([r, count]) => ({ r, count }));
 
   return {
-    avgRisk: m.avgRiskPct,
-    maxRisk: risks.length ? risks.reduce((mx, v) => (v > mx ? v : mx), risks[0]) : null,
-    riskConsistency: m.riskConsistency,
-    kellyPct: m.kellyPct,
-    sharpeRatio: m.sharpeRatio,
-    rMultipleDistribution: m.rMultipleDistribution,
+    avgRisk,
+    maxRisk: risks.length ? Math.max(...risks) : null,
+    riskConsistency,
+    kellyPct,
+    sharpeRatio,
+    rMultipleDistribution,
   };
 }
 
 function computeStatistics(trades: Trade[]): StatisticsResult {
   const closed = trades.filter(isClosed);
-  const Rs = closed.map(getResolvedR).filter((r): r is number => r !== null);
+  const Rs = closed.filter(t => t.rMultiple !== null).map(t => t.rMultiple!);
   const n = Rs.length;
   const m = avg(Rs);
-  const sd = stdDev(Rs);          // انحراف معیار نمونه (n-1) برای بازهٔ اطمینان
+  const sd = stdDev(Rs);
   const med = median(Rs);
 
-  // چولگی و کشیدگی با گشتاورهای جامعه (m3/m2^1.5 و m4/m2^2 − 3)
   let skewness: number | null = null;
   let kurtosis: number | null = null;
-  if (m !== null && n >= 3) {
-    const m2 = Rs.reduce((s, v) => s + (v - m) ** 2, 0) / n;
-    if (m2 > 0) {
-      const m3 = Rs.reduce((s, v) => s + (v - m) ** 3, 0) / n;
-      skewness = m3 / Math.pow(m2, 1.5);
-      if (n >= 4) {
-        const m4 = Rs.reduce((s, v) => s + (v - m) ** 4, 0) / n;
-        kurtosis = m4 / (m2 * m2) - 3;
-      }
-    }
+  if (m !== null && sd !== null && sd > 0 && n >= 3) {
+    skewness = Rs.reduce((s, v) => s + Math.pow((v - m) / sd, 3), 0) / n;
+  }
+  if (m !== null && sd !== null && sd > 0 && n >= 4) {
+    kurtosis = Rs.reduce((s, v) => s + Math.pow((v - m) / sd, 4), 0) / n - 3;
   }
 
-  // بازهٔ اطمینان ۹۵٪ میانگین R با توزیع t (برای نمونه‌های کوچک دقیق‌تر از ۱٫۹۶)
+  // 95% CI
   let confidenceInterval: { lower: number; upper: number } | null = null;
   if (m !== null && sd !== null && n >= 5) {
     const se = sd / Math.sqrt(n);
-    const t = tCritical95(n - 1);
-    confidenceInterval = { lower: m - t * se, upper: m + t * se };
+    confidenceInterval = { lower: m - 1.96 * se, upper: m + 1.96 * se };
   }
 
   return { medianR: med, stdDevR: sd, skewness, kurtosis, sampleSize: n, confidenceInterval };

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { accountService } from '../services/accountService';
-import { Account } from '../db/database';
+import { tradingBoxService } from '../services/tradingBoxService';
+import { Account, TradingBox } from '../db/database';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -22,20 +23,26 @@ const emptyForm = {
   currentBalance: '',
   color: '#3b82f6',
   isDefault: false,
+  tradingBoxIds: [] as string[],
   notes: '',
 };
 
 export default function Accounts() {
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [tradingBoxes, setTradingBoxes] = useState<TradingBox[]>([]);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
 
-  const load = () => accountService.getAll().then(setAccounts);
+  const load = async () => {
+    const [accountRows, boxRows] = await Promise.all([accountService.getAll(), tradingBoxService.getAll()]);
+    setAccounts(accountRows);
+    setTradingBoxes(boxRows);
+  };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { void load(); }, []);
 
   const openNew = () => {
     setEditingId(null);
@@ -53,6 +60,7 @@ export default function Accounts() {
       currentBalance: acc.currentBalance?.toString() ?? '',
       color: acc.color,
       isDefault: acc.isArchived ? false : acc.isDefault,
+      tradingBoxIds: acc.tradingBoxIds ?? tradingBoxes.filter(box => box.accountId === acc.id).map(box => box.id),
       notes: acc.notes ?? '',
     });
     setDialogOpen(true);
@@ -72,6 +80,7 @@ export default function Accounts() {
       currentBalance: form.currentBalance ? parseFloat(form.currentBalance) : null,
       color: form.color,
       isDefault: form.isDefault,
+      tradingBoxIds: form.tradingBoxIds.filter(id => tradingBoxes.some(box => box.id === id)),
       notes: form.notes.trim() || null,
     };
     try {
@@ -214,6 +223,33 @@ export default function Accounts() {
                   ))}
                 </div>
               </div>
+            </div>
+            <div className="space-y-2">
+              <Label>باکس‌های مجاز این حساب</Label>
+              {tradingBoxes.length === 0 ? (
+                <p className="text-xs text-muted-foreground">هنوز باکسی نساخته‌اید؛ می‌توانید بعداً از بخش باکس‌های معاملاتی اضافه کنید.</p>
+              ) : (
+                <div className="max-h-36 space-y-1 overflow-y-auto rounded-md border p-2">
+                  {tradingBoxes.map(box => (
+                    <label key={box.id} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted/50">
+                      <input
+                        type="checkbox"
+                        checked={form.tradingBoxIds.includes(box.id)}
+                        onChange={event => setForm(current => ({
+                          ...current,
+                          tradingBoxIds: event.target.checked
+                            ? [...new Set([...current.tradingBoxIds, box.id])]
+                            : current.tradingBoxIds.filter(id => id !== box.id),
+                        }))}
+                      />
+                      <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: box.color }} />
+                      <span className="min-w-0 flex-1 truncate">{box.name}</span>
+                      {box.accountId && box.accountId !== editingId && <span className="text-[10px] text-muted-foreground">حساب دیگر</span>}
+                    </label>
+                  ))}
+                </div>
+              )}
+              <p className="text-xs text-muted-foreground">یک یا چند باکس را انتخاب کنید. تغییر این فهرست فقط انتخاب‌های آینده را محدود می‌کند و معاملات قبلی را تغییر نمی‌دهد.</p>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-2">

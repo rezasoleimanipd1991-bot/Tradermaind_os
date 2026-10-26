@@ -6,7 +6,7 @@
  */
 import { Trade } from '../db/database';
 import { InsightCard } from './analyticsService';
-import { isWin, isLoss, isClosed, getNetPnl } from '../lib/tradeHelpers';
+import { isWin, isLoss, isClosed } from '../lib/tradeHelpers';
 
 // ================================================================
 // Types
@@ -234,7 +234,7 @@ function calcMedianR(trades: Trade[]): number | null {
 }
 
 function calcTotalPnl(trades: Trade[]): number {
-  return trades.reduce((s, t) => s + (getNetPnl(t) ?? 0), 0);
+  return trades.reduce((s, t) => s + (t.profitLoss || 0), 0);
 }
 
 function parseTags(json: string): string[] {

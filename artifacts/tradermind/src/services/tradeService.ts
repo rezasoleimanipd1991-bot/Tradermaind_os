@@ -4,7 +4,7 @@ import { strategyService } from './strategyService';
 import { analysisService } from './analysisService';
 import { tradeVersionService, tradeEventService } from './tradeEventService';
 import { detectTradingSession } from '../lib/tradeClassification';
-import { getTradingDateRange } from '../lib/tradingTime';
+import { isTradingBoxAvailableForAccount } from './tradingBoxService';
 
 const defaultReview = JSON.stringify({ didWell: '', didWrong: '', learned: '', wouldTakeAgain: null, validSetup: null });
 const defaultPostTradeReviewStr = JSON.stringify(defaultPostTradeReview);
@@ -81,7 +81,8 @@ export const tradeService = {
       defaults.boxId ? db.tradingBoxes.get(defaults.boxId) : Promise.resolve(undefined),
     ]);
     defaults.accountId = linkedJournalSession?.accountId ?? (defaultAccount && !defaultAccount.isArchived ? defaultAccount.id : null);
-    defaults.boxId = linkedJournalSession?.tradingBoxId ?? defaultBox?.id ?? null;
+    defaults.boxId = linkedJournalSession?.tradingBoxId
+      ?? (defaultBox && isTradingBoxAvailableForAccount(defaultBox, defaultAccount) ? defaultBox.id : null);
     defaults.strategyId = linkedJournalSession?.strategyId ?? null;
     if (sessionSymbol) defaults.symbol = sessionSymbol;
 
@@ -89,7 +90,7 @@ export const tradeService = {
       sessionId: null, market: null,
       direction: 'long', entryPrice: 0, exitPrice: null, stopLoss: 0,
       takeProfit: null, positionSize: null, riskPercentage: null, riskAmount: null,
-      rMultiple: null, result: 'open', profitLoss: null, fees: null, commission: null, spread: null, swap: null, status: 'open',
+      rMultiple: null, result: 'open', profitLoss: null, fees: null, commission: null, spread: null, status: 'open',
       openedAt: now, closedAt: null, reasonForExit: null,
       emotions: '[]', emotionNotes: null, notes: null,
       screenshots: '[]', adherenceScore: null, adherenceRating: null,
@@ -221,8 +222,7 @@ export const tradeService = {
         db.marketContextSessions,
         db.journalTradeData,
         db.journalMedia,
-        db.journalTriggers,
-        db.journalSessionAnalyses,
+        db.journalTriggerEvents,
       ],
       async () => {
         // حذف رکوردهای وابسته
@@ -234,16 +234,15 @@ export const tradeService = {
         await db.journalTradeData.where('tradeId').equals(id).delete();
         await db.journalMedia.where('tradeId').equals(id).delete();
 
-        // تریگر و تحلیل به‌عنوان رویداد سشن باقی می‌مانند؛ فقط ارجاع به معاملهٔ حذف‌شده پاک می‌شود
-        const linkedTriggers = await db.journalTriggers.where('tradeId').equals(id).toArray();
+        // حذف معامله، تریگر سشن را نیز از وضعیت «تبدیل‌شده» به صف انتخاب برمی‌گرداند.
+        const linkedTriggers = await db.journalTriggerEvents.where('linkedTradeId').equals(id).toArray();
         for (const trigger of linkedTriggers) {
-          await db.journalTriggers.update(trigger.id, { tradeId: null, status: 'confirmed', updatedAt: Date.now() });
-        }
-        const linkedAnalyses = await db.journalSessionAnalyses.filter(a => a.nextTradeId === id || a.previousTradeId === id).toArray();
-        for (const analysis of linkedAnalyses) {
-          await db.journalSessionAnalyses.update(analysis.id, {
-            nextTradeId: analysis.nextTradeId === id ? null : analysis.nextTradeId,
-            previousTradeId: analysis.previousTradeId === id ? null : analysis.previousTradeId,
+          await db.journalTriggerEvents.update(trigger.id, {
+            linkedTradeId: null,
+            status: 'pending',
+            linkedTradeDirection: null,
+            linkedTradeEntryTriggerOptionId: null,
+            updatedAt: Date.now(),
           });
         }
 
@@ -290,7 +289,7 @@ export const tradeService = {
       total: trades.length,
       winRate: closed.length > 0 ? (wins.length / closed.length) * 100 : 0,
       totalPnl: trades.reduce((acc, t) => acc + (getNetPnl(t) ?? 0), 0),
-      avgRMultiple: withR.length > 0 ? withR.reduce((acc, t) => acc + (t.rMultiple || 0), 0) / withR.length : 0,
+      avgRMultiple: withR.length > 0 ? withR.reduce((acc, t) => acc + (t.rMultiple ?? 0), 0) / withR.length : 0,
       closedCount: closed.length,
       openCount: trades.filter(t => t.status === 'open').length,
     };
@@ -324,13 +323,11 @@ export const tradeService = {
   },
 
   async getTradesByDate(dateStr: string): Promise<Trade[]> {
-    // بازهٔ روز بر اساس «مبنای زمانی» انتخاب‌شده (ساعت دستگاه یا بروکر) تا با
-    // گروه‌بندی تاریخ در بقیهٔ برنامه یکی باشد؛ انتهای روز هم کامل (تا ۲۳:۵۹:۵۹٫۹۹۹) است.
-    const { from, to } = getTradingDateRange(dateStr);
-    if (Number.isNaN(from) || Number.isNaN(to)) return [];
+    const start = new Date(dateStr + 'T00:00:00').getTime();
+    const end = new Date(dateStr + 'T23:59:59').getTime();
     return db.trades
       .where('openedAt')
-      .between(from, to, true, true)
+      .between(start, end, true, true)
       .toArray();
   },
 };

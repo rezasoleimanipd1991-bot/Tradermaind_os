@@ -37,28 +37,38 @@ export async function getTrades(filters?: TradeFilters): Promise<Trade[]> {
     return db.trades.toArray();
   }
 
-  const hasFrom = filters.fromDate !== undefined;
-  const hasTo = filters.toDate !== undefined;
-
-  // انتخاب بهترین index برای محدود کردن اولیه؛ بقیه فیلترها همیشه در حافظه اعمال می‌شوند.
-  // (نسخهٔ قبلی اگر فقط یکی از fromDate/toDate داده می‌شد آن را کاملاً نادیده می‌گرفت.)
-  const collection = (() => {
-    if (hasFrom && hasTo) {
-      return db.trades.where('openedAt').between(filters.fromDate!, filters.toDate!, true, true);
+  let collection = (() => {
+    if (filters.fromDate !== undefined && filters.toDate !== undefined) {
+      // از index openedAt استفاده می‌کنیم
+      return db.trades.where('openedAt').between(filters.fromDate, filters.toDate, true, true);
     }
-    if (hasFrom) return db.trades.where('openedAt').aboveOrEqual(filters.fromDate!);
-    if (hasTo) return db.trades.where('openedAt').belowOrEqual(filters.toDate!);
-    if (filters.status) return db.trades.where('status').equals(filters.status);
-    if (filters.symbol) return db.trades.where('symbol').equals(filters.symbol);
-    if (filters.strategyId) return db.trades.where('strategyId').equals(filters.strategyId);
+    if (filters.status) {
+      return db.trades.where('status').equals(filters.status);
+    }
+    if (filters.symbol) {
+      return db.trades.where('symbol').equals(filters.symbol);
+    }
+    if (filters.strategyId) {
+      return db.trades.where('strategyId').equals(filters.strategyId);
+    }
     return db.trades.toCollection();
   })();
 
   let results = await collection.toArray();
 
-  if (filters.status) results = results.filter(t => t.status === filters.status);
-  if (filters.symbol) results = results.filter(t => t.symbol === filters.symbol);
-  if (filters.strategyId) results = results.filter(t => t.strategyId === filters.strategyId);
+  // فیلترهای اضافی در حافظه (روی subset کوچک‌تر)
+  if (filters.status && !filters.fromDate) {
+    results = results.filter(t => t.status === filters.status);
+  }
+  if (filters.symbol && !filters.fromDate) {
+    results = results.filter(t => t.symbol === filters.symbol);
+  }
+  if (filters.strategyId && !filters.fromDate) {
+    results = results.filter(t => t.strategyId === filters.strategyId);
+  }
+  if (filters.fromDate !== undefined && filters.toDate !== undefined && filters.status) {
+    results = results.filter(t => t.status === filters.status);
+  }
 
   return results;
 }
@@ -102,33 +112,39 @@ export async function getPaginatedTrades(
   pageSize = DEFAULT_PAGE_SIZE,
   filters?: TradeFilters,
 ): Promise<PaginatedResult<Trade>> {
-  const safePage = Math.max(1, Math.floor(page) || 1);
-  const offset = (safePage - 1) * pageSize;
+  const offset = (page - 1) * pageSize;
 
-  const matches = (t: Trade): boolean => {
-    if (!filters) return true;
-    if (filters.status && t.status !== filters.status) return false;
-    if (filters.symbol && t.symbol !== filters.symbol) return false;
-    if (filters.strategyId && t.strategyId !== filters.strategyId) return false;
-    if (filters.fromDate !== undefined && t.openedAt < filters.fromDate) return false;
-    if (filters.toDate !== undefined && t.openedAt > filters.toDate) return false;
-    return true;
-  };
+  // شمارش کل (بدون بارگذاری همه داده)
+  let totalCollection = (() => {
+    if (filters?.status) return db.trades.where('status').equals(filters.status);
+    if (filters?.symbol) return db.trades.where('symbol').equals(filters.symbol);
+    if (filters?.fromDate !== undefined && filters?.toDate !== undefined) {
+      return db.trades.where('openedAt').between(filters.fromDate, filters.toDate, true, true);
+    }
+    return db.trades.toCollection();
+  })();
 
-  // همیشه روی index زمان (openedAt) و جدیدترین-اول؛ فیلترها با هم ترکیب می‌شوند.
-  // (قبلاً با فیلتر status/symbol ترتیب بر اساس همان index بود، نه زمان، و
-  //  شمارش کل فقط یک فیلتر را لحاظ می‌کرد؛ نتیجه: صفحه‌بندی و total اشتباه.)
-  const hasFilters = !!filters && Object.keys(filters).length > 0;
-  const base = db.trades.orderBy('openedAt').reverse();
-  const total = hasFilters ? await base.clone().filter(matches).count() : await db.trades.count();
-  const items = await (hasFilters ? base.filter(matches) : base)
+  const total = await totalCollection.count();
+
+  // دریافت صفحه با orderBy + offset + limit
+  let itemCollection = (() => {
+    if (filters?.status) return db.trades.where('status').equals(filters.status);
+    if (filters?.symbol) return db.trades.where('symbol').equals(filters.symbol);
+    if (filters?.fromDate !== undefined && filters?.toDate !== undefined) {
+      return db.trades.where('openedAt').between(filters.fromDate, filters.toDate, true, true);
+    }
+    return db.trades.orderBy('openedAt');
+  })();
+
+  const items = await itemCollection
+    .reverse()       // جدیدترین ابتدا
     .offset(offset)
     .limit(pageSize)
     .toArray();
 
   return {
     items,
-    page: safePage,
+    page,
     pageSize,
     total,
     hasNext: offset + items.length < total,

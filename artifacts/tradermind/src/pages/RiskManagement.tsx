@@ -36,6 +36,7 @@ import {
   scanAllViolations,
 } from '../services/riskService';
 import type { RiskProfileData, RiskInsight } from '../services/riskService';
+import { VoiceTypingButton } from '../components/ui/VoiceTypingButton';
 
 // ─────────────────────────────────────────────────────────────────
 // Types
@@ -1073,12 +1074,14 @@ export default function RiskManagement() {
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div>
                     <label className="text-xs text-muted-foreground mb-1 block">نام گروه *</label>
+                    <div className="flex h-5 justify-end"><VoiceTypingButton /></div>
                     <input value={newGroupName} onChange={e => setNewGroupName(e.target.value)}
                       placeholder="مثال: جفت‌ارزهای دلاری"
                       className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring" />
                   </div>
                   <div>
                     <label className="text-xs text-muted-foreground mb-1 block">نمادها (با کاما جدا کنید)</label>
+                    <div className="flex h-5 justify-end"><VoiceTypingButton /></div>
                     <input value={newGroupSymbols} onChange={e => setNewGroupSymbols(e.target.value)}
                       placeholder="EURUSD, GBPUSD, AUDUSD"
                       className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring" />
@@ -1221,12 +1224,14 @@ function ViolationEditForm({ violation, form, setForm, onSave, onCancel }: {
       </div>
       <div>
         <label className="text-xs text-muted-foreground mb-1 block">توضیح</label>
+        <div className="flex h-5 justify-end"><VoiceTypingButton /></div>
         <textarea value={form.explanation ?? ''} onChange={e => setForm({ ...form, explanation: e.target.value })}
           rows={2} placeholder="چرا این اتفاق افتاد؟"
           className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring resize-none" />
       </div>
       <div>
         <label className="text-xs text-muted-foreground mb-1 block">درس آموخته‌شده</label>
+        <div className="flex h-5 justify-end"><VoiceTypingButton /></div>
         <textarea value={form.lesson ?? ''} onChange={e => setForm({ ...form, lesson: e.target.value })}
           rows={2} placeholder="چه درسی گرفتید؟"
           className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring resize-none" />

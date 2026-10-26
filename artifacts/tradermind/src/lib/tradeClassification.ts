@@ -1,6 +1,5 @@
 import type { Trade } from '../db/database';
 import { getTradingDateParts, getTradingTimeConfig, type TradingTimeConfig } from './tradingTime';
-import { getNetPnl } from './tradeHelpers';
 
 export type DetectedTradingSession = 'asia' | 'london' | 'overlap' | 'new-york' | 'other';
 
@@ -33,38 +32,22 @@ export function resultFromProfitLoss(profitLoss: number): Trade['result'] {
   return 'breakeven';
 }
 
-type CostFields = Partial<Pick<Trade, 'fees' | 'commission' | 'spread' | 'swap'>>;
-
-/**
- * نتیجهٔ معامله از روی «سود خالص» (پس از کسر هزینه‌ها) تعیین می‌شود تا با
- * محاسبات آماری (که بر پایهٔ سود خالص‌اند) تناقض نداشته باشد.
- */
-function resultFromTrade(trade: Pick<Trade, 'profitLoss'> & CostFields): Trade['result'] {
-  const net = getNetPnl(trade as Trade);
-  return resultFromProfitLoss(net ?? (trade.profitLoss as number));
-}
-
 /**
  * Derive fields that can be safely inferred from imported trade data.
  * A missing P&L remains an open trade unless there is another explicit close
  * signal (close time, exit price, or closed status).
  */
 export function classifyTradeFields(
-  trade: Pick<Trade, 'profitLoss' | 'closedAt' | 'exitPrice' | 'status' | 'result'> & CostFields,
+  trade: Pick<Trade, 'profitLoss' | 'closedAt' | 'exitPrice' | 'status' | 'result'>,
 ): Pick<Trade, 'status' | 'result'> {
   if (trade.status === 'cancelled' || trade.result === 'cancelled') {
     return { status: 'cancelled', result: 'cancelled' };
   }
 
   if (hasFinitePnl(trade)) {
-    const computed = resultFromTrade(trade);
-    // برچسب «جزئی» که کاربر انتخاب کرده و با علامت سود خالص هم‌خوان است حفظ می‌شود
-    const keepPartial =
-      (trade.result === 'partial-win' && computed === 'win') ||
-      (trade.result === 'partial-loss' && computed === 'loss');
     return {
       status: 'closed',
-      result: keepPartial ? trade.result : computed,
+      result: resultFromProfitLoss(trade.profitLoss as number),
     };
   }
 
@@ -92,10 +75,6 @@ export function normalizeImportedTradeFields(
     exitPrice: trade.exitPrice ?? null,
     status: trade.status ?? 'open',
     result: trade.result ?? 'open',
-    fees: trade.fees ?? null,
-    commission: trade.commission ?? null,
-    spread: trade.spread ?? null,
-    swap: trade.swap ?? null,
   });
 
   return {

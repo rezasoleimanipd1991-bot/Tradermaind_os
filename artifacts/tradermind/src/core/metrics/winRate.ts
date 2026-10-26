@@ -1,13 +1,10 @@
 /**
  * winRate.ts — محاسبات Win Rate
  * PART 5 / Prompt 3 — Core Metrics Service
- *
- * برد/باخت/سربه‌سر بر اساس علامت سود خالص تعیین می‌شود (getOutcome).
- * Win Rate = برد ÷ همهٔ معاملات بسته (سربه‌سر در مخرج می‌ماند).
  */
 
-import type { Trade } from '../../db/database';
-import { isClosed, isWin, isLoss, isBreakEven, getCloseTime } from '../../lib/tradeHelpers';
+import { Trade } from '../../db/database';
+import { isClosed, isWin, isLoss } from '../../lib/tradeHelpers';
 import { getTradingDateParts } from '../../lib/tradingTime';
 
 export interface WinRateResult {
@@ -24,7 +21,7 @@ export function computeWinRate(trades: Trade[]): WinRateResult {
   const closed = trades.filter(isClosed);
   const wins = closed.filter(isWin);
   const losses = closed.filter(isLoss);
-  const breakeven = closed.filter(isBreakEven);
+  const breakeven = closed.filter(t => t.result === 'breakeven');
 
   const total = closed.length;
   return {
@@ -69,11 +66,11 @@ export function computeWinRateByDayOfWeek(trades: Trade[]): Array<{
   });
 }
 
-/** Win Rate در معاملات اخیر (برای نمایش روند) — جدیدترین‌ها بر اساس زمان بسته شدن */
+/** Win Rate در ۵ معامله اخیر (برای نمایش روند) */
 export function computeRecentWinRate(trades: Trade[], last = 5): number | null {
   const closed = trades
     .filter(isClosed)
-    .sort((a, b) => getCloseTime(b) - getCloseTime(a))
+    .sort((a, b) => b.openedAt - a.openedAt)
     .slice(0, last);
 
   if (!closed.length) return null;

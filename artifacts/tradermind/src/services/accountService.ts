@@ -1,3 +1,5 @@
+import { runAsRemote } from '../db/syncSupport';
+import { DEFAULT_ACCOUNT_ID } from '../db/defaultIds';
 import { db, Account } from '../db/database';
 
 function uuid(): string {
@@ -48,7 +50,13 @@ export const accountService = {
   async ensureDefault(): Promise<Account> {
     const existing = await db.accounts.filter(account => !account.isArchived).first();
     if (existing) return existing;
-    return this.create({
+    const stale = await db.accounts.get(DEFAULT_ACCOUNT_ID);
+    if (stale) {
+      await db.accounts.update(DEFAULT_ACCOUNT_ID, { isArchived: false, updatedAt: Date.now() });
+      return (await db.accounts.get(DEFAULT_ACCOUNT_ID)) as Account;
+    }
+    const account: Account = {
+      id: DEFAULT_ACCOUNT_ID,
       name: 'حساب اصلی',
       broker: '',
       currency: 'USD',
@@ -56,7 +64,12 @@ export const accountService = {
       currentBalance: null,
       color: '#3b82f6',
       isDefault: true,
+      tradingBoxIds: [],
       notes: null,
-    });
+      createdAt: Date.now(),
+      updatedAt: 0, // پیش‌فرض دست‌نخورده؛ نسخه‌ی ویرایش‌شده‌ی دستگاه دیگر را بازنویسی نمی‌کند
+    };
+    await runAsRemote(() => db.accounts.add(account));
+    return account;
   },
 };

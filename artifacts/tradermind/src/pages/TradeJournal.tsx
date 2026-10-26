@@ -42,6 +42,7 @@ function TradeListVirtualized({
   onSelectAll: () => void;
 }) {
   const tableRef = useRef<HTMLDivElement>(null);
+  const headerScrollRef = useRef<HTMLDivElement>(null);
   const mobileRef = useRef<HTMLDivElement>(null);
 
   const tableVirtualizer = useVirtualizer({
@@ -62,8 +63,20 @@ function TradeListVirtualized({
     <>
       {/* جدول — دسکتاپ */}
       <div className="hidden md:block rounded-xl border bg-card overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm whitespace-nowrap">
+        <div
+          ref={headerScrollRef}
+          className="overflow-x-auto"
+          onScroll={event => {
+            if (tableRef.current) tableRef.current.scrollLeft = event.currentTarget.scrollLeft;
+          }}
+        >
+          <table className="min-w-[1064px] w-full table-fixed text-sm whitespace-nowrap">
+            <colgroup>
+              <col style={{ width: 44 }} /><col style={{ width: 116 }} /><col style={{ width: 120 }} />
+              <col style={{ width: 88 }} /><col style={{ width: 100 }} /><col style={{ width: 100 }} />
+              <col style={{ width: 100 }} /><col style={{ width: 124 }} /><col style={{ width: 64 }} />
+              <col style={{ width: 96 }} /><col style={{ width: 112 }} />
+            </colgroup>
             <thead className="text-xs text-muted-foreground uppercase bg-muted/30 border-b sticky top-0 z-10">
               <tr>
                 <th className="px-3 py-3 w-10">
@@ -86,9 +99,22 @@ function TradeListVirtualized({
             </thead>
           </table>
         </div>
-        <div ref={tableRef} className="overflow-y-auto max-h-[600px]" style={{ overscrollBehavior: 'contain' }}>
+        <div
+          ref={tableRef}
+          className="overflow-x-auto overflow-y-auto max-h-[600px]"
+          style={{ overscrollBehavior: 'contain' }}
+          onScroll={event => {
+            if (headerScrollRef.current) headerScrollRef.current.scrollLeft = event.currentTarget.scrollLeft;
+          }}
+        >
           <div style={{ height: tableVirtualizer.getTotalSize(), position: 'relative' }}>
-            <table className="w-full text-sm whitespace-nowrap">
+            <table className="min-w-[1064px] w-full table-fixed text-sm whitespace-nowrap">
+              <colgroup>
+                <col style={{ width: 44 }} /><col style={{ width: 116 }} /><col style={{ width: 120 }} />
+                <col style={{ width: 88 }} /><col style={{ width: 100 }} /><col style={{ width: 100 }} />
+                <col style={{ width: 100 }} /><col style={{ width: 124 }} /><col style={{ width: 64 }} />
+                <col style={{ width: 96 }} /><col style={{ width: 112 }} />
+              </colgroup>
               <tbody>
                 {tableVirtualizer.getVirtualItems().map(vi => {
                   const trade = trades[vi.index];

@@ -8,7 +8,7 @@ import type { Trade } from '../../db/database';
 
 // ─── داده‌های تستی ────────────────────────────────────────────────────────────
 
-function makeTradeRaw(overrides: Partial<Trade> = {}): Trade {
+function makeTrade(overrides: Partial<Trade> = {}): Trade {
   return {
     id: `t_${Math.random().toString(36).slice(2)}`,
     sessionId: null,
@@ -68,20 +68,6 @@ function makeTradeRaw(overrides: Partial<Trade> = {}): Trade {
   };
 }
 
-/**
- * نتیجهٔ معامله از علامت سود خالص تعیین می‌شود؛ پس اگر تست فقط `result` را
- * بدهد، سود/زیان هم‌جهت با آن ساخته می‌شود تا داده‌ی آزمون متناقض نباشد.
- */
-function makeTrade(overrides: Partial<Trade> = {}): Trade {
-  const trade = makeTradeRaw(overrides);
-  if (overrides.profitLoss === undefined && overrides.result) {
-    if (overrides.result === 'loss' || overrides.result === 'partial-loss') trade.profitLoss = -100;
-    else if (overrides.result === 'breakeven') trade.profitLoss = 0;
-    else if (overrides.result === 'win' || overrides.result === 'partial-win') trade.profitLoss = 100;
-  }
-  return trade;
-}
-
 // ─── تست‌های computeAnalytics ────────────────────────────────────────────────
 
 describe('computeAnalytics — TradeSummary', () => {
@@ -117,39 +103,6 @@ describe('computeAnalytics — TradeSummary', () => {
     expect(result.summary.total).toBe(2);
     expect(result.summary.open).toBe(1);
     expect(result.summary.wins).toBe(1);
-  });
-
-  it('محاسبات مالی را از سود خالص و فقط معاملات بسته با داده معتبر می‌گیرد', () => {
-    const trades = [
-      makeTradeRaw({
-        status: 'closed', result: 'loss', profitLoss: 100, fees: 20,
-        rMultiple: null, riskAmount: 40, closedAt: 1,
-      }),
-      makeTradeRaw({
-        status: 'closed', result: 'win', profitLoss: -50, fees: 5,
-        rMultiple: null, riskAmount: 55, closedAt: 2,
-      }),
-      makeTradeRaw({
-        status: 'closed', result: 'win', profitLoss: 100, fees: 100,
-        rMultiple: null, riskAmount: null, closedAt: 3,
-      }),
-      makeTradeRaw({
-        status: 'closed', result: 'win', profitLoss: null,
-        rMultiple: null, riskAmount: 20, closedAt: 4,
-      }),
-      makeTradeRaw({
-        status: 'open', result: 'open', profitLoss: 1_000,
-        rMultiple: 10, openedAt: 5,
-      }),
-    ];
-
-    const result = computeAnalytics(trades, [], []);
-    expect(result.summary.totalPnl).toBe(25);
-    expect(result.summary.breakeven).toBe(1);
-    expect(result.summary.avgR).toBeCloseTo(0.5, 10);
-    expect(result.summary.bestTrade).toBe(80);
-    expect(result.summary.worstTrade).toBe(-55);
-    expect(result.pnlCurve).toHaveLength(3);
   });
 
   it('باید winRate را به درستی محاسبه کند', () => {

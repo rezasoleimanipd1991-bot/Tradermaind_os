@@ -2,57 +2,56 @@
  * expectancy.ts — محاسبه Expectancy
  * PART 5 / Prompt 3 — Core Metrics Service
  *
- * Expectancy = میانگین نتیجهٔ هر معامله (برحسب R یا پول).
- * این معادل (WinRate × AvgWin) + (LossRate × AvgLoss) است، با این تفاوت که
- * فقط روی معاملاتی محاسبه می‌شود که مقدار معتبر دارند؛ پس نبودِ R در بعضی
- * معاملات، نرخ‌ها را به‌اشتباه با مخرج متفاوت ترکیب نمی‌کند.
+ * Expectancy = (WinRate × AvgWin) + (LossRate × AvgLoss)
  * نتیجه مثبت یعنی سیستم سودده است.
  */
 
-import type { Trade } from '../../db/database';
-import { isClosed, isWin, isLoss, getNetPnl, getResolvedR, avg } from '../../lib/tradeHelpers';
+import { Trade } from '../../db/database';
+import { isClosed, isWin, isLoss } from '../../lib/tradeHelpers';
 
 export interface ExpectancyResult {
-  expectancy: number | null;        // بر حسب R (میانگین R همهٔ معاملات دارای R)
-  expectancyPnl: number | null;     // بر حسب مقدار مالی خالص
+  expectancy: number | null;        // بر حسب R
+  expectancyPnl: number | null;     // بر حسب مقدار مالی
   avgWinR: number | null;
-  avgLossR: number | null;          // منفی
+  avgLossR: number | null;
   avgWinPnl: number | null;
-  avgLossPnl: number | null;        // منفی
+  avgLossPnl: number | null;
   winRate: number | null;
   lossRate: number | null;
-  sampleSize: number;               // تعداد معاملات بسته
-  rSampleSize: number;              // تعداد معاملات دارای R معتبر
-  pnlSampleSize: number;            // تعداد معاملات دارای سود/زیان معتبر
+  sampleSize: number;
 }
 
-/** محاسبه Expectancy */
+/** محاسبه Expectancy بر اساس R-Multiple */
 export function computeExpectancy(trades: Trade[]): ExpectancyResult {
   const closed = trades.filter(isClosed);
+  const wins = closed.filter(isWin);
+  const losses = closed.filter(isLoss);
   const n = closed.length;
 
-  const winRate = n > 0 ? closed.filter(isWin).length / n : null;
-  const lossRate = n > 0 ? closed.filter(isLoss).length / n : null;
+  const winRate = n > 0 ? wins.length / n : null;
+  const lossRate = n > 0 ? losses.length / n : null;
 
   // R-based
-  const rs = closed
-    .map(t => ({ t, r: getResolvedR(t) }))
-    .filter((x): x is { t: Trade; r: number } => x.r !== null);
-  const winRs = rs.filter(x => x.r > 0).map(x => x.r);
-  const lossRs = rs.filter(x => x.r < 0).map(x => x.r);
-  const avgWinR = avg(winRs);
-  const avgLossR = avg(lossRs);
-  const expectancy = rs.length ? avg(rs.map(x => x.r)) : null;
+  const winRs = wins.filter(t => t.rMultiple !== null).map(t => t.rMultiple!);
+  const lossRs = losses.filter(t => t.rMultiple !== null).map(t => t.rMultiple!);
+  const avgWinR = winRs.length ? winRs.reduce((s, v) => s + v, 0) / winRs.length : null;
+  const avgLossR = lossRs.length ? lossRs.reduce((s, v) => s + v, 0) / lossRs.length : null;
+
+  let expectancy: number | null = null;
+  if (winRate !== null && lossRate !== null && avgWinR !== null && avgLossR !== null) {
+    expectancy = winRate * avgWinR + lossRate * avgLossR;
+  }
 
   // PnL-based
-  const pnls = closed
-    .map(getNetPnl)
-    .filter((v): v is number => v !== null);
-  const winPnls = pnls.filter(v => v > 0);
-  const lossPnls = pnls.filter(v => v < 0);
-  const avgWinPnl = avg(winPnls);
-  const avgLossPnl = avg(lossPnls);
-  const expectancyPnl = pnls.length ? avg(pnls) : null;
+  const winPnls = wins.filter(t => t.profitLoss !== null).map(t => t.profitLoss!);
+  const lossPnls = losses.filter(t => t.profitLoss !== null).map(t => t.profitLoss!);
+  const avgWinPnl = winPnls.length ? winPnls.reduce((s, v) => s + v, 0) / winPnls.length : null;
+  const avgLossPnl = lossPnls.length ? lossPnls.reduce((s, v) => s + v, 0) / lossPnls.length : null;
+
+  let expectancyPnl: number | null = null;
+  if (winRate !== null && lossRate !== null && avgWinPnl !== null && avgLossPnl !== null) {
+    expectancyPnl = winRate * avgWinPnl + lossRate * avgLossPnl;
+  }
 
   return {
     expectancy,
@@ -64,7 +63,5 @@ export function computeExpectancy(trades: Trade[]): ExpectancyResult {
     winRate,
     lossRate,
     sampleSize: n,
-    rSampleSize: rs.length,
-    pnlSampleSize: pnls.length,
   };
 }

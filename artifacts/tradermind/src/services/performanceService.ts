@@ -3,27 +3,24 @@
  * Prompt 25 — Pure calculation functions, no DB access, completely offline.
  */
 import { Trade, PostTradeReviewData } from '../db/database';
-import { avg, median, stdDev, toDateStr, isWin, isLoss, isBreakEven, isClosed, getPTR, flagCount, getNetPnl, getResolvedR, getCloseTime } from '../lib/tradeHelpers';
-import { computeProfitFactor } from '../core/metrics/profitFactor';
+import { avg, median, stdDev, toDateStr, isWin, isLoss, isClosed, getPTR, flagCount } from '../lib/tradeHelpers';
 import { getTradingDateParts, getTradingMonthKey } from '../lib/tradingTime';
 
 // ─────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────
 function weekKey(ts: number): string {
-  // هفتهٔ ISO-8601 (سال-هفته)؛ نسخهٔ قبلی «هفتهٔ ماه» می‌داد و هفته‌های ماه‌های مختلف را در هم می‌ریخت
   const p = getTradingDateParts(ts);
-  const d = new Date(Date.UTC(p.year, p.month, p.day));
-  const dayNum = d.getUTCDay() || 7;
-  d.setUTCDate(d.getUTCDate() + 4 - dayNum); // پنجشنبهٔ همان هفته
-  const yearStart = Date.UTC(d.getUTCFullYear(), 0, 1);
-  const week = Math.ceil(((d.getTime() - yearStart) / 86_400_000 + 1) / 7);
-  return `${d.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+  const date = new Date(Date.UTC(p.year, p.month, p.day));
+  const day = date.getUTCDay();
+  const diff = date.getUTCDate() - day + (day === 0 ? -6 : 1);
+  const mon = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), diff));
+  return `${mon.getUTCFullYear()}-W${String(Math.ceil((mon.getUTCDate() + (mon.getUTCDay() || 7) - 1) / 7)).padStart(2, '0')}`;
 }
 function monthKey(ts: number): string {
   return getTradingMonthKey(ts);
 }
-function getR(t: Trade): number | null { return getResolvedR(t); }
+function getR(t: Trade): number | null { return t.rMultiple ?? null; }
 
 function dateRange(trades: Trade[]): string {
   if (!trades.length) return '—';
@@ -58,24 +55,25 @@ export function calcBaseMetrics(trades: Trade[]): BaseMetrics {
   const closed = trades.filter(isClosed);
   const wins = closed.filter(isWin);
   const losses = closed.filter(isLoss);
-  const breakEvens = closed.filter(isBreakEven);
+  const breakEvens = closed.filter(t => t.result === 'breakeven');
   const Rs = closed.filter(t => getR(t) !== null).map(t => getR(t)!);
   const winRs = wins.filter(t => getR(t) !== null).map(t => getR(t)!);
   const lossRs = losses.filter(t => getR(t) !== null).map(t => getR(t)!);
   const winRate = closed.length > 0 ? wins.length / closed.length : null;
   const avgWin = avg(winRs);
   const avgLoss = avg(lossRs);
-  // Expectancy = میانگین R همهٔ معاملات دارای R (سربه‌سرها صفر‌اند و در مخرج می‌مانند)
-  const expectancy = Rs.length ? avg(Rs) : null;
-  const nets = closed.map(getNetPnl).filter((v): v is number => v !== null);
+  const expectancy = winRate !== null && avgWin !== null && avgLoss !== null
+    ? winRate * avgWin + (1 - winRate) * avgLoss : null;
+  const totalWin = wins.reduce((s, t) => s + Math.max(0, t.profitLoss ?? 0), 0);
+  const totalLoss = Math.abs(losses.reduce((s, t) => s + Math.min(0, t.profitLoss ?? 0), 0));
   return {
     count: closed.length, winCount: wins.length, lossCount: losses.length, breakEvenCount: breakEvens.length,
     winRate, avgR: avg(Rs), medianR: median(Rs), expectancy,
-    profitFactor: computeProfitFactor(closed).profitFactor,
+    profitFactor: totalLoss > 0 ? totalWin / totalLoss : null,
     avgWin, avgLoss,
     maxWin: winRs.length ? Math.max(...winRs) : null,
     maxLoss: lossRs.length ? Math.min(...lossRs) : null,
-    totalPnL: nets.reduce((s, v) => s + v, 0),
+    totalPnL: closed.reduce((s, t) => s + (t.profitLoss ?? 0), 0),
     sampleWarning: closed.length < 20,
   };
 }
@@ -98,12 +96,12 @@ export function getPerformanceProfile(trades: Trade[]): PerformanceProfile {
   const base = calcBaseMetrics(trades);
   const closed = trades.filter(isClosed);
   const risks = closed.filter(t => t.riskPercentage !== null).map(t => t.riskPercentage!);
-  const cv = risks.length >= 2 && (avg(risks) ?? 0) > 0 ? (stdDev(risks)! / avg(risks)!) : null;
-  const holdings = closed.filter(t => t.closedAt !== null && t.closedAt >= t.openedAt).map(t => (t.closedAt! - t.openedAt) / 60000);
+  const cv = risks.length >= 2 ? (stdDev(risks)! / (avg(risks) || 1)) : null;
+  const holdings = closed.filter(t => t.closedAt !== null).map(t => (t.closedAt! - t.openedAt) / 60000);
   const withReview = trades.filter(t => { try { const r = JSON.parse(t.postTradeReview) as PostTradeReviewData; return r.completedAt > 0; } catch { return false; } });
   let maxDD = 0, peak = 0, equity = 0;
-  [...closed].sort((a, b) => getCloseTime(a) - getCloseTime(b)).forEach(t => {
-    equity += (getR(t) ?? 0);
+  [...closed].sort((a, b) => a.openedAt - b.openedAt).forEach(t => {
+    equity += (t.rMultiple ?? 0);
     if (equity > peak) peak = equity;
     const dd = peak > 0 ? (peak - equity) / peak : 0;
     if (dd > maxDD) maxDD = dd;
@@ -111,8 +109,7 @@ export function getPerformanceProfile(trades: Trade[]): PerformanceProfile {
   // trades per week
   let freq: number | null = null;
   if (closed.length >= 2) {
-    const opened = closed.map(t => t.openedAt);
-    const span = (Math.max(...opened) - Math.min(...opened)) / (7 * 86400000);
+    const span = (closed[closed.length - 1].openedAt - closed[0].openedAt) / (7 * 86400000);
     freq = span > 0 ? closed.length / span : null;
   }
   return {
@@ -646,7 +643,7 @@ export function getScorecard(trades: Trade[]): Scorecard {
   const mistakes = detectMistakes(trades);
   const strengths = detectStrengths(trades);
   const risks = closed.filter(t => t.riskPercentage !== null).map(t => t.riskPercentage!);
-  const cv = risks.length >= 2 && (avg(risks) ?? 0) > 0 ? (stdDev(risks)! / avg(risks)!) : null;
+  const cv = risks.length >= 2 ? (stdDev(risks)! / (avg(risks) || 1)) : null;
 
   // Financial performance: expectancy + win rate + R
   const finScore = (() => {

@@ -2,15 +2,16 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ArrowRight, FilePlus2, Save, Trash2 } from 'lucide-react';
 import { useRoute, useLocation } from 'wouter';
 import { toast } from 'sonner';
-import type { JournalMedia, JournalOption, JournalTradeData, StrategyVersion, Trade } from '../db/database';
+import type { JournalMedia, JournalOption, JournalTradeData, JournalTriggerEvent, StrategyVersion, Trade } from '../db/database';
 import { db } from '../db/database';
-import { journalSessionService, parseJournalArray, parsePreTradePsychology } from '../services/journalSessionService';
-import { Badge } from '../components/ui/badge';
+import { journalSessionService, parseJournalArray } from '../services/journalSessionService';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Input } from '../components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Textarea } from '../components/ui/textarea';
+import { TradeExcursionCard } from '../components/journal/TradeExcursionCard';
+import { SessionAnalysisPanel } from '../components/journal/SessionAnalysisPanel';
 
 type PsychologyPhase = { optionIds: string[]; intensity: number };
 type Psychology = { before: PsychologyPhase; during: PsychologyPhase; after: PsychologyPhase };
@@ -28,6 +29,7 @@ const blankMeta = (tradeId: string, sessionId: string): Omit<JournalTradeData, '
   setupGradeOptionId: null,
   scoTypeOptionId: null,
   fvgTypeOptionId: null,
+  scenarioOutcomeOptionId: null,
   checklistResults: '{}',
   psychology: JSON.stringify(emptyPsychology()),
   mistakeOptionIds: '[]',
@@ -35,18 +37,6 @@ const blankMeta = (tradeId: string, sessionId: string): Omit<JournalTradeData, '
   violatedRuleIds: '[]',
   setupQuality: null,
   executionQuality: null,
-  scenarioOutcome: null,
-  scenarioOutcomeNotes: '',
-  lesson: '',
-  finalReflection: '',
-  reviewTagOptionIds: '[]',
-  whatHappened: '',
-  entryValid: null,
-  slRespected: null,
-  managementCorrect: null,
-  emotionalReaction: '',
-  tradeQuality: null,
-  riskManagementQuality: null,
 });
 
 function parseObject<T>(value: string | undefined, fallback: T): T {
@@ -88,16 +78,16 @@ export default function JournalTradeReview() {
   const [, setLocation] = useLocation();
   const tradeId = params?.id ?? '';
   const [trade, setTrade] = useState<Trade | null>(null);
+  const [linkedTrigger, setLinkedTrigger] = useState<JournalTriggerEvent | null>(null);
   const [meta, setMeta] = useState<Omit<JournalTradeData, 'id' | 'createdAt' | 'updatedAt'> | null>(null);
   const [sessionTitle, setSessionTitle] = useState('');
   const [options, setOptions] = useState<JournalOption[]>([]);
+  const [hiddenCats, setHiddenCats] = useState<ReadonlySet<string>>(() => new Set());
   const [rules, setRules] = useState<Array<{ id: string; title: string }>>([]);
   const [media, setMedia] = useState<JournalMedia[]>([]);
-  const [fileCategory, setFileCategory] = useState<JournalMedia['category']>('entry');
+  const [fileCategory, setFileCategory] = useState<JournalMedia['category']>('review');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [ctx, setCtx] = useState<Awaited<ReturnType<typeof journalSessionService.getTradeContext>>>();
-  const [reviewId, setReviewId] = useState('');
 
   const load = useCallback(async () => {
     if (!tradeId) return;
@@ -110,24 +100,45 @@ export default function JournalTradeReview() {
         setLocation('/journal/trades');
         return;
       }
-      const [session, version, previous, allOptions, attachments] = await Promise.all([
+      const [session, version, previous, allOptions, attachments, currentTrigger, hiddenIds] = await Promise.all([
         db.journalSessions.get(found.journalSessionId),
         db.strategyVersions.get((await db.journalSessions.get(found.journalSessionId))?.strategyVersionId ?? ''),
         db.journalTradeData.where('tradeId').equals(found.id).first(),
         journalSessionService.getOptions(undefined, true),
         db.journalMedia.where('tradeId').equals(found.id).sortBy('createdAt'),
+        found.journalTriggerEventId
+          ? db.journalTriggerEvents.get(found.journalTriggerEventId)
+          : Promise.resolve(undefined),
+        journalSessionService.getHiddenCategoryIds(),
       ]);
       if (!session) throw new Error('سشن معاملاتی این معامله پیدا نشد.');
       const symbols = parseJournalArray(session.symbols);
       setTrade(found);
+      setLinkedTrigger(currentTrigger ?? null);
       setSessionTitle(`${symbols.join(', ') || found.symbol} · ${new Date(session.startTime).toLocaleDateString()}`);
       setOptions(allOptions);
+      setHiddenCats(new Set(hiddenIds));
       setMedia(attachments);
-      // تمام فیلدهای مرور (از جمله درس، نتیجهٔ سناریو و جمع‌بندی) حفظ می‌شوند؛ نه فقط فیلدهای قدیمی
-      setReviewId(previous?.id ?? found.id);
-      setCtx(await journalSessionService.getTradeContext(found.id));
       setMeta(previous
-        ? (({ id: _id, createdAt: _c, updatedAt: _u, ...rest }) => rest)(previous)
+        ? {
+            tradeId: previous.tradeId,
+            journalSessionId: previous.journalSessionId,
+            entryTriggerOptionIds: previous.entryTriggerOptionIds,
+            entryReasonOptionId: previous.entryReasonOptionId,
+            exitReasonOptionId: previous.exitReasonOptionId,
+            setupTypeOptionId: previous.setupTypeOptionId,
+            setupGradeOptionId: previous.setupGradeOptionId,
+            scoTypeOptionId: previous.scoTypeOptionId ?? null,
+            fvgTypeOptionId: previous.fvgTypeOptionId ?? null,
+            scenarioOutcomeOptionId: previous.scenarioOutcomeOptionId ?? null,
+            checklistResults: previous.checklistResults,
+            psychology: previous.psychology,
+            mistakeOptionIds: previous.mistakeOptionIds,
+            strategyCompliance: previous.strategyCompliance,
+            violatedRuleIds: previous.violatedRuleIds,
+            setupQuality: previous.setupQuality,
+            executionQuality: previous.executionQuality,
+          }
         : blankMeta(found.id, found.journalSessionId));
       setRules(snapshotRules(version));
     } catch (error) {
@@ -178,7 +189,7 @@ export default function JournalTradeReview() {
   const save = async () => {
     if (!meta || !trade) return;
     const checklist = parseObject<ChecklistResults>(meta.checklistResults, {});
-    const missingRequired = (byCategory.get('checklist') ?? [])
+    const missingRequired = (hiddenCats.has('checklist') ? [] : byCategory.get('checklist') ?? [])
       .filter(option => option.enabled && option.required && !checklist[option.id]);
     if (missingRequired.length) {
       toast.error(`موارد اجباری چک‌لیست را تأیید کنید: ${missingRequired.map(item => item.label).join('، ')}`);
@@ -186,13 +197,7 @@ export default function JournalTradeReview() {
     }
     setSaving(true);
     try {
-      // نوع تریگر ثبت‌شده در رویداد تریگر برای فیلترهای تحلیلی هم‌گام می‌شود (بدون پرسش دوباره از کاربر)
-      const triggerType = ctx?.trigger?.triggerTypeOptionId;
-      const triggerList = parseJournalArray(meta.entryTriggerOptionIds);
-      const next = triggerType && !triggerList.includes(triggerType)
-        ? { ...meta, entryTriggerOptionIds: JSON.stringify([...triggerList, triggerType]) }
-        : meta;
-      await journalSessionService.saveTradeData(next);
+      await journalSessionService.saveTradeData(meta);
       toast.success('مرور ژورنال معامله ذخیره شد.');
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'ذخیره مرور معامله ناموفق بود.');
@@ -207,7 +212,7 @@ export default function JournalTradeReview() {
       const attachment = await journalSessionService.saveMedia({
         sessionId: trade.journalSessionId,
         tradeId: trade.id,
-        reviewId: fileCategory === 'review' ? reviewId : null,
+        reviewId: fileCategory === 'review' ? trade.id : null,
         category: fileCategory,
         file,
       });
@@ -231,12 +236,15 @@ export default function JournalTradeReview() {
   const checklist = parseObject<ChecklistResults>(meta.checklistResults, {});
   const psychology = parseObject<Psychology>(meta.psychology, emptyPsychology());
   const selectedRules = parseJournalArray(meta.violatedRuleIds);
+  const linkedOptionLabel = (optionId: string | null | undefined, fallback: string) =>
+    options.find(option => option.id === optionId)?.label ?? fallback;
 
   const multiOptions = (
     category: string,
     selected: string[],
     onToggle: (id: string) => void,
   ) => {
+    if (hiddenCats.has(category)) return null;
     const categoryOptions = byCategory.get(category) ?? [];
     return categoryOptions.length ? (
       <div className="grid gap-2 sm:grid-cols-2">
@@ -252,10 +260,11 @@ export default function JournalTradeReview() {
   };
 
   const singleOptionSelect = (
-    key: 'entryReasonOptionId' | 'exitReasonOptionId' | 'setupTypeOptionId' | 'setupGradeOptionId' | 'scoTypeOptionId' | 'fvgTypeOptionId',
+    key: 'entryReasonOptionId' | 'exitReasonOptionId' | 'setupTypeOptionId' | 'setupGradeOptionId' | 'scoTypeOptionId' | 'fvgTypeOptionId' | 'scenarioOutcomeOptionId',
     category: string,
     label: string,
   ) => {
+    if (hiddenCats.has(category)) return null;
     const categoryOptions = byCategory.get(category) ?? [];
     return (
       <label className="space-y-1.5 text-sm">
@@ -290,20 +299,19 @@ export default function JournalTradeReview() {
         </Button>
       </header>
 
-      {ctx?.session && (
-        <Card className="border-primary/20 bg-primary/5" data-testid="card-review-context-summary">
-          <CardHeader><CardTitle className="text-base">خلاصهٔ زمینه <span className="text-xs font-normal text-muted-foreground">(فقط‌خواندنی)</span></CardTitle></CardHeader>
-          <CardContent className="space-y-2 text-sm">
-            <div className="flex flex-wrap gap-2">
-              <Badge variant="outline">{ctx.strategyVersion?.strategyName ?? ctx.strategy?.name ?? 'استراتژی'}</Badge>
-              {ctx.analysis && <Badge>{options.find(o => o.id === ctx.analysis?.timeframeOptionId)?.label ?? 'تحلیل'}</Badge>}
-              {ctx.trigger && <Badge variant="secondary">تریگر: {options.find(o => o.id === ctx.trigger?.triggerTypeOptionId)?.label ?? 'ثبت‌شده'}</Badge>}
-            </div>
-            {parsePreTradePsychology(ctx.session.preTradePsychology).optionIds.length > 0 && (
-              <p className="text-xs text-muted-foreground">روانشناسی پیش از سشن: {parsePreTradePsychology(ctx.session.preTradePsychology).optionIds.map(id => options.find(o => o.id === id)?.label).filter(Boolean).join('، ')}</p>
-            )}
-            {ctx.analysis?.scenario && <p className="text-xs"><span className="font-medium">سناریوی مورد انتظار: </span>{ctx.analysis.scenario}</p>}
-            {ctx.trigger?.entryReason && <p className="text-xs"><span className="font-medium">دلیل ورود: </span>{ctx.trigger.entryReason}</p>}
+      <SessionAnalysisPanel tradeId={trade.id} journalSessionId={trade.journalSessionId} />
+
+      {linkedTrigger && (
+        <Card data-testid="card-linked-trigger-details">
+          <CardHeader><CardTitle className="text-base">جزئیات فعلی تریگر پیوندخورده</CardTitle></CardHeader>
+          <CardContent className="grid gap-3 sm:grid-cols-2">
+            <div><p className="text-xs text-muted-foreground">بازهٔ زمانی</p><p className="text-sm">{linkedOptionLabel(linkedTrigger.timeframeOptionId, 'بازهٔ حذف‌شده')}</p></div>
+            <div><p className="text-xs text-muted-foreground">نوع تریگر</p><p className="text-sm">{linkedOptionLabel(linkedTrigger.triggerTypeOptionId, 'ثبت‌نشده')}</p></div>
+            <div><p className="text-xs text-muted-foreground">جهت تریگر</p><p className="text-sm">{linkedOptionLabel(linkedTrigger.directionOptionId, 'ثبت‌نشده')}</p></div>
+            <div><p className="text-xs text-muted-foreground">وضعیت تأیید</p><p className="text-sm">{linkedTrigger.confirmed ? 'تأییدشده' : 'تأییدنشده'}</p></div>
+            {linkedTrigger.description && <div className="sm:col-span-2"><p className="text-xs text-muted-foreground">شرح تریگر</p><p className="whitespace-pre-wrap text-sm">{linkedTrigger.description}</p></div>}
+            {linkedTrigger.marketMovement && <div className="sm:col-span-2"><p className="text-xs text-muted-foreground">حرکت بازار</p><p className="whitespace-pre-wrap text-sm">{linkedTrigger.marketMovement}</p></div>}
+            {linkedTrigger.notes && <div className="sm:col-span-2"><p className="text-xs text-muted-foreground">یادداشت تریگر</p><p className="whitespace-pre-wrap text-sm">{linkedTrigger.notes}</p></div>}
           </CardContent>
         </Card>
       )}
@@ -318,9 +326,10 @@ export default function JournalTradeReview() {
             {singleOptionSelect('exitReasonOptionId', 'exit_reason', 'دلیل خروج')}
             {singleOptionSelect('scoTypeOptionId', 'sco_type', 'نوع SCO')}
             {singleOptionSelect('fvgTypeOptionId', 'fvg_type', 'نوع FVG')}
+            {singleOptionSelect('scenarioOutcomeOptionId', 'scenario_outcome', 'نتیجهٔ سناریوی تحلیل')}
           </div>
-          {!ctx?.trigger && <div className="space-y-2"><h2 className="text-sm font-medium">تریگرهای ورود</h2>{multiOptions('entry_trigger', triggerIds, id => selectedList('entryTriggerOptionIds', id))}</div>}
-          <div className="space-y-2">
+          <div className="space-y-2"><h2 className="text-sm font-medium">تریگرهای ورود</h2>{multiOptions('entry_trigger', triggerIds, id => selectedList('entryTriggerOptionIds', id))}</div>
+          {!hiddenCats.has('checklist') && <div className="space-y-2">
             <h2 className="text-sm font-medium">چک‌لیست ورود</h2>
             {(byCategory.get('checklist') ?? []).length === 0 ? <p className="text-xs text-muted-foreground">گزینه‌ای تعریف نشده است.</p> : (
               <div className="grid gap-2 sm:grid-cols-2">
@@ -332,7 +341,7 @@ export default function JournalTradeReview() {
                 ))}
               </div>
             )}
-          </div>
+          </div>}
         </CardContent>
       </Card>
 
@@ -399,12 +408,13 @@ export default function JournalTradeReview() {
         </CardContent>
       </Card>
 
+      <TradeExcursionCard trade={trade} onSaved={load} />
+
       <Card>
-        <CardHeader><CardTitle className="text-base">روانشناسی</CardTitle><CardDescription>روانشناسی پیش از شروع در خود سشن ثبت شده و اینجا دوباره پرسیده نمی‌شود.</CardDescription></CardHeader>
+        <CardHeader><CardTitle className="text-base">روانشناسی</CardTitle></CardHeader>
         <CardContent className="space-y-5">
           {([
-            ['during', 'حین ورود و مدیریت معامله'],
-            ['after', 'پس از معامله'],
+            ['during', 'حین معامله'],
           ] as const).map(([phase, label]) => (
             <section key={phase} className="space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -426,54 +436,10 @@ export default function JournalTradeReview() {
         </CardContent>
       </Card>
 
-      <Card>
+      {!hiddenCats.has('mistake') && <Card>
         <CardHeader><CardTitle className="text-base">اشتباه‌ها</CardTitle></CardHeader>
         <CardContent>{multiOptions('mistake', mistakeIds, id => selectedList('mistakeOptionIds', id))}</CardContent>
-      </Card>
-
-      <Card data-testid="card-post-trade-review">
-        <CardHeader><CardTitle className="text-base">مرور پس از معامله</CardTitle><CardDescription>فقط آنچه بعد از معامله مشخص می‌شود.</CardDescription></CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-1.5"><span className="text-sm text-muted-foreground">چه اتفاقی افتاد؟</span>
-            <Textarea rows={3} value={meta.whatHappened ?? ''} onChange={e => setMeta({ ...meta, whatHappened: e.target.value })} data-testid="input-review-what-happened" /></div>
-          <div className="grid gap-3 sm:grid-cols-3">
-            {([['entryValid', 'آیا ورود معتبر بود؟'], ['slRespected', 'آیا حد ضرر رعایت شد؟'], ['managementCorrect', 'آیا مدیریت معامله درست بود؟']] as const).map(([key, label]) => (
-              <label key={key} className="space-y-1.5 text-sm"><span className="text-muted-foreground">{label}</span>
-                <Select value={meta[key] ?? '__none__'} onValueChange={value => setMeta({ ...meta, [key]: value === '__none__' ? null : value as 'yes' | 'partially' | 'no' })}>
-                  <SelectTrigger data-testid={`select-review-${key}`}><SelectValue /></SelectTrigger>
-                  <SelectContent><SelectItem value="__none__">ثبت نشده</SelectItem><SelectItem value="yes">بله</SelectItem><SelectItem value="partially">تا حدی</SelectItem><SelectItem value="no">خیر</SelectItem></SelectContent>
-                </Select></label>
-            ))}
-          </div>
-          <div className="grid gap-3 sm:grid-cols-3">
-            {([['tradeQuality', 'کیفیت معامله (۰ تا ۱۰)'], ['riskManagementQuality', 'مدیریت ریسک (۰ تا ۱۰)']] as const).map(([key, label]) => (
-              <label key={key} className="space-y-1.5 text-sm"><span className="text-muted-foreground">{label}</span>
-                <Input type="number" min="0" max="10" value={meta[key] ?? ''} data-testid={`input-review-${key}`}
-                  onChange={e => setMeta({ ...meta, [key]: e.target.value === '' ? null : Math.min(10, Math.max(0, Number(e.target.value) || 0)) })} /></label>
-            ))}
-          </div>
-          <div className="space-y-1.5"><span className="text-sm text-muted-foreground">واکنش احساسی</span>
-            <Textarea rows={2} value={meta.emotionalReaction ?? ''} onChange={e => setMeta({ ...meta, emotionalReaction: e.target.value })} data-testid="input-review-emotional-reaction" /></div>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <label className="space-y-1.5 text-sm"><span className="text-muted-foreground">نتیجهٔ سناریوی تحلیل</span>
-              <Select value={meta.scenarioOutcome ?? '__none__'} onValueChange={value => setMeta({ ...meta, scenarioOutcome: value === '__none__' ? null : value as NonNullable<JournalTradeData['scenarioOutcome']> })}>
-                <SelectTrigger data-testid="select-review-scenario-outcome"><SelectValue /></SelectTrigger>
-                <SelectContent><SelectItem value="__none__">ثبت نشده</SelectItem><SelectItem value="played-out">طبق سناریو پیش رفت</SelectItem><SelectItem value="partially">نسبتاً</SelectItem><SelectItem value="failed">شکست خورد</SelectItem><SelectItem value="invalidated">باطل شد</SelectItem></SelectContent>
-              </Select></label>
-            <div className="space-y-1.5"><span className="text-sm text-muted-foreground">توضیح نتیجهٔ سناریو</span>
-              <Input value={meta.scenarioOutcomeNotes ?? ''} onChange={e => setMeta({ ...meta, scenarioOutcomeNotes: e.target.value })} data-testid="input-review-scenario-notes" /></div>
-          </div>
-          <div className="space-y-2"><h2 className="text-sm font-medium">برچسب‌های مرور</h2>
-            {multiOptions('tag', parseJournalArray(meta.reviewTagOptionIds), id => {
-              const list = parseJournalArray(meta.reviewTagOptionIds);
-              setMeta({ ...meta, reviewTagOptionIds: JSON.stringify(list.includes(id) ? list.filter(x => x !== id) : [...list, id]) });
-            })}</div>
-          <div className="space-y-1.5"><span className="text-sm text-muted-foreground">درس معامله</span>
-            <Textarea rows={3} value={meta.lesson ?? ''} onChange={e => setMeta({ ...meta, lesson: e.target.value })} data-testid="input-review-lesson" /></div>
-          <div className="space-y-1.5"><span className="text-sm text-muted-foreground">جمع‌بندی نهایی</span>
-            <Textarea rows={3} value={meta.finalReflection ?? ''} onChange={e => setMeta({ ...meta, finalReflection: e.target.value })} data-testid="input-review-final-reflection" /></div>
-        </CardContent>
-      </Card>
+      </Card>}
 
       <Card>
         <CardHeader><CardTitle className="text-base">رسانه و فایل‌ها</CardTitle></CardHeader>
@@ -486,7 +452,7 @@ export default function JournalTradeReview() {
                 <SelectItem value="entry">ورود</SelectItem>
                 <SelectItem value="during-trade">حین معامله</SelectItem>
                 <SelectItem value="after-exit">پس از خروج</SelectItem>
-                <SelectItem value="review">مرور (تصویر/ویدیوی تحلیل پس از معامله)</SelectItem>
+                <SelectItem value="review">پیوست مرور پس از معامله</SelectItem>
               </SelectContent>
             </Select>
             <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted">

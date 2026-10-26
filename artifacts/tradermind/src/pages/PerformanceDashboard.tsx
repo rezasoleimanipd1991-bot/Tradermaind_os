@@ -32,6 +32,7 @@ import type {
 } from '../services/performanceService';
 import { getPostLossBehavior, getPostWinBehavior } from '../services/riskService';
 import { useAppStore } from '../store/useAppStore';
+import { VoiceTypingButton } from '../components/ui/VoiceTypingButton';
 
 // ─────────────────────────────────────────────────────────────────
 // UI Helpers
@@ -967,6 +968,7 @@ export default function PerformanceDashboard() {
                     )}
                     <div>
                       <label className="text-xs text-muted-foreground mb-1 block">یادداشت شخصی برای این دوره</label>
+                      <div className="flex h-5 justify-end"><VoiceTypingButton /></div>
                       <textarea value={reviewNotes} onChange={e => setReviewNotes(e.target.value)} rows={3}
                         placeholder="درس‌ها، اهداف و مشاهدات این دوره..."
                         className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring resize-none" />

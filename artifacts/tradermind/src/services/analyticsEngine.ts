@@ -23,7 +23,7 @@ import {
   BaseMetrics,
 } from './performanceService';
 import { computeAnalytics, filterTradesByRange, TimeRangeKey, AnalyticsData } from './analyticsService';
-import { isWin, isClosed, getNetPnl, getResolvedR } from '../lib/tradeHelpers';
+import { isWin, isLoss, isClosed } from '../lib/tradeHelpers';
 import { computeTraderProfile } from './traderProfileService';
 import { getTradingDateKey } from '../lib/tradingTime';
 
@@ -212,10 +212,10 @@ export function getUniqueTimeframes(trades: Trade[]): string[] {
 export function getQuickSummary(trades: Trade[]) {
   const closed = trades.filter(isClosed);
   const wins = closed.filter(isWin);
-  const Rs = closed.map(getResolvedR).filter((r): r is number => r !== null);
-  const nets = closed.map(getNetPnl).filter((v): v is number => v !== null);
+  const withR = closed.filter(t => t.rMultiple !== null);
+  const withPnL = closed.filter(t => t.profitLoss !== null);
   const winRate = closed.length > 0 ? wins.length / closed.length : null;
-  const avgR = Rs.length > 0 ? Rs.reduce((s, v) => s + v, 0) / Rs.length : null;
-  const totalPnL = nets.length > 0 ? nets.reduce((s, v) => s + v, 0) : null;
+  const avgR = withR.length > 0 ? withR.reduce((s, t) => s + t.rMultiple!, 0) / withR.length : null;
+  const totalPnL = withPnL.length > 0 ? withPnL.reduce((s, t) => s + t.profitLoss!, 0) : null;
   return { total: closed.length, wins: wins.length, winRate, avgR, totalPnL };
 }

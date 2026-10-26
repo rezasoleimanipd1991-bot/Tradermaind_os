@@ -18,57 +18,15 @@ import { getTradingDateKey, getTradingMonthKey } from './tradingTime';
 
 export const isClosed   = (t: Trade): boolean => t.status === 'closed';
 export const isOpen     = (t: Trade): boolean => t.status === 'open';
+export const isWin      = (t: Trade): boolean => t.result === 'win' || t.result === 'partial-win';
+export const isLoss     = (t: Trade): boolean => t.result === 'loss' || t.result === 'partial-loss';
+export const isBreakEven= (t: Trade): boolean => t.result === 'breakeven';
 
-/** عدد معتبر (متناهی) بودن مقدار */
-const isFiniteNumber = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
-
-/**
- * سود/زیان خالص پس از کسر کمیسیون، اسپرد و سایر هزینه‌ها.
- *
- * قرارداد محاسباتی:
- * - `profitLoss` همیشه سود/زیان ناخالص (Gross) است.
- * - `fees`، `commission` و `spread` هزینه هستند و همیشه کسر می‌شوند
- *   (علامت واردشده توسط کاربر مهم نیست: -2 و 2 هر دو یعنی ۲ واحد هزینه).
- * - `swap` علامت‌دار است (منفی = هزینه، مثبت = درآمد) و همان‌طور که هست اضافه می‌شود.
- */
+/** سود/زیان خالص پس از کسر کمیسیون، اسپرد و سایر هزینه‌ها. */
 export const getNetPnl = (t: Trade): number | null => {
-  if (!isFiniteNumber(t.profitLoss)) return null;
-  const cost = (v: number | null | undefined) => (isFiniteNumber(v) ? Math.abs(v) : 0);
-  const swap = isFiniteNumber(t.swap) ? t.swap : 0;
-  return t.profitLoss - cost(t.fees) - cost(t.commission) - cost(t.spread) + swap;
+  if (t.profitLoss === null || t.profitLoss === undefined) return null;
+  return t.profitLoss - (t.fees ?? 0) - (t.commission ?? 0) - (t.spread ?? 0);
 };
-
-/**
- * نتیجهٔ مالی معامله: وقتی سود/زیان ثبت شده باشد، علامت سود خالص ملاک است
- * (تا برچسب قدیمی/دستی با نتیجهٔ واقعی تناقض پیدا نکند). در غیر این صورت
- * به برچسب `result` برمی‌گردد.
- */
-export const getOutcome = (t: Trade): 'win' | 'loss' | 'breakeven' | null => {
-  const net = getNetPnl(t);
-  if (net !== null) return net > 0 ? 'win' : net < 0 ? 'loss' : 'breakeven';
-  if (t.result === 'win' || t.result === 'partial-win') return 'win';
-  if (t.result === 'loss' || t.result === 'partial-loss') return 'loss';
-  if (t.result === 'breakeven') return 'breakeven';
-  return null;
-};
-
-export const isWin       = (t: Trade): boolean => getOutcome(t) === 'win';
-export const isLoss      = (t: Trade): boolean => getOutcome(t) === 'loss';
-export const isBreakEven = (t: Trade): boolean => getOutcome(t) === 'breakeven';
-
-/** زمان مبنای ترتیب زمانی معامله (بستن؛ در نبود آن باز شدن) */
-export const getCloseTime = (t: Trade): number => t.closedAt ?? t.openedAt;
-
-/**
- * مقدار R معامله: اگر R ذخیره شده معتبر باشد همان؛ وگرنه
- * (در صورت وجود ریسک مالی مثبت) سود خالص ÷ ریسک.
- */
-export function getResolvedR(t: Trade): number | null {
-  if (isFiniteNumber(t.rMultiple)) return t.rMultiple;
-  const net = getNetPnl(t);
-  if (net !== null && isFiniteNumber(t.riskAmount) && t.riskAmount > 0) return net / t.riskAmount;
-  return null;
-}
 
 // ── تاریخ ─────────────────────────────────────────────────────────────────────
 
@@ -89,11 +47,11 @@ export function avg(arr: number[]): number | null {
   return arr.length > 0 ? arr.reduce((s, v) => s + v, 0) / arr.length : null;
 }
 
-/** انحراف معیار نمونه (n-1) — null اگر کمتر از ۲ عنصر باشد */
+/** انحراف معیار — null اگر کمتر از ۲ عنصر باشد */
 export function stdDev(arr: number[]): number | null {
   if (arr.length < 2) return null;
   const m = avg(arr)!;
-  return Math.sqrt(arr.reduce((s, v) => s + (v - m) ** 2, 0) / (arr.length - 1));
+  return Math.sqrt(arr.reduce((s, v) => s + (v - m) ** 2, 0) / arr.length);
 }
 
 /** میانه آرایه اعداد — null اگر خالی باشد */

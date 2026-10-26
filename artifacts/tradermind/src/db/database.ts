@@ -1,4 +1,6 @@
 import Dexie, { Table } from 'dexie';
+import { installSyncHooks, backfillUpdatedAt } from './syncSupport';
+import { migrateToStableIds } from './migrateStableIds';
 
 // ── کمک: تبدیل Base64 dataUrl به Blob ──────────────────────────────────────
 export function dataUrlToBlob(dataUrl: string): Blob {
@@ -81,10 +83,8 @@ export interface Trade {
   sessionId: string | null;
   /** Session-based journal link. Kept separate from sessionId, which belongs to AnalysisSession. */
   journalSessionId?: string | null;
-  /** آخرین تحلیل (Analysis Event) که این معامله بر پایهٔ آن باز شد — اختیاری */
-  analysisEventId?: string | null;
-  /** تریگر ۱ دقیقه‌ای ورود (JournalTriggerEvent) — اختیاری */
-  triggerEventId?: string | null;
+  journalAnalysisEventId?: string | null;
+  journalTriggerEventId?: string | null;
   strategyId: string | null;
   accountId: string | null;   // حساب معاملاتی
   boxId: string | null;        // باکس معاملاتی
@@ -104,8 +104,6 @@ export interface Trade {
   fees: number | null;
   commission?: number | null;   // کمیسیون جدا از سایر هزینه‌ها
   spread?: number | null;       // هزینه اسپرد به واحد ارز حساب
-  /** سواپ (علامت‌دار): منفی = هزینه، مثبت = درآمد. به سود خالص اضافه می‌شود. */
-  swap?: number | null;
   status: 'open' | 'closed' | 'cancelled';
   openedAt: number;
   closedAt: number | null;
@@ -849,6 +847,8 @@ export interface ChartScreenshot {
   setup: string | null;
   strategy: string | null;
   tradeId: string | null;      // لینک به معامله مرتبط
+  sourceTradeScreenshotId?: string | null;
+  sourceMediaId?: string | null;
   screenshotType: string;      // ChartScreenshotType
   label: string | null;
   notes: string | null;
@@ -935,6 +935,8 @@ export interface Account {
   color: string;              // رنگ شناسه‌ای
   isDefault: boolean;
   isArchived?: boolean;
+  /** Boxes explicitly available to this account; absent on legacy records. */
+  tradingBoxIds?: string[];
   notes: string | null;
   createdAt: number;
   updatedAt: number;
@@ -964,25 +966,21 @@ export interface JournalSession {
   strategyId: string;
   strategyVersionId: string;
   symbols: string;
+  marketOptionId?: string | null;
   startTime: number;
   endTime: number | null;
   status: JournalSessionStatus;
   sessionTypeOptionId: string | null;
   notes: string;
   tags: string;
+  preTradePsychology?: string;
   lessonsLearned: string;
   mistakesReview: string;
   psychologicalReview: string;
   strategyObservations: string;
   strategyChangeProposal: string;
-  /** روانشناسی پیش از شروع سشن: JSON {optionIds: string[], intensity: number, notes: string} */
-  preTradePsychology?: string;
-  /** جمع‌بندی نهایی سشن */
-  finalReflection?: string;
-  /** کیفیت کلی سشن (۰ تا ۱۰) */
   sessionQuality?: number | null;
-  /** رعایت کلی استراتژی در سشن */
-  strategyCompliance?: 'yes' | 'partially' | 'no' | null;
+  finalReflection?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -999,62 +997,63 @@ export interface JournalOption {
   updatedAt: number;
 }
 
-/**
- * یک «رویداد تحلیل» در سشن. در یک سشن می‌تواند چندین رویداد برای یک تایم‌فریم
- * (در زمان‌های مختلف) وجود داشته باشد؛ دیگر یک رکورد ثابت برای هر تایم‌فریم نیست.
- * فیلدهای جدید همه اختیاری‌اند تا رکوردهای قدیمی بدون migration معتبر بمانند.
- */
 export interface JournalSessionAnalysis {
   id: string;
   sessionId: string;
   timeframeOptionId: string;
+  analysisText?: string;
+  marketContext?: string;
   directionOptionId: string | null;
   marketStructureOptionId: string | null;
   liquidityContextOptionIds: string;
   expectedDirectionOptionId: string | null;
+  scenario?: string;
+  triggerContext?: string;
   zones: string;
   notes: string;
   tags: string;
-  /** متن تحلیل */
-  analysisText?: string;
-  /** سناریوی مورد انتظار (پیش از معامله؛ نتیجه‌اش در مرور معامله ثبت می‌شود) */
-  scenario?: string;
-  /** زمینه/تریگر احتمالی که منتظرش هستیم */
-  triggerContext?: string;
-  /** زمینهٔ بازار (متن آزاد) */
-  marketContext?: string;
-  /** معامله‌ای که پیش از این تحلیل بسته شد (اختیاری) */
   previousTradeId?: string | null;
-  /** معامله‌ای که بعد از این تحلیل باز شد (اختیاری؛ از طرف معامله هم قابل استخراج است) */
   nextTradeId?: string | null;
+  /** اندازهٔ مومنتوم بازار (متن آزاد). */
+  momentumText?: string;
+  /** موقعیت فعلی قیمت (متن آزاد). */
+  pricePositionText?: string;
+  /** منطق جهت (متن آزاد). */
+  directionLogicText?: string;
+  /**
+   * JSON از نوع Record<fieldKey, string[]> برای فیلدهایی که کاربر آن‌ها را
+   * به‌صورت چک‌باکس تنظیم کرده است (مثلاً «نواحی پیش رو»).
+   */
+  fieldSelections?: string;
+  /** نتیجهٔ سناریو که بعد از پایان سشن ثبت می‌شود (دستهٔ scenario_outcome). */
+  scenarioOutcomeOptionId?: string | null;
+  scenarioOutcomeNote?: string;
   createdAt: number;
   updatedAt: number;
 }
 
-export type JournalTriggerStatus = 'pending' | 'confirmed' | 'traded' | 'skipped' | 'invalid';
-
-/**
- * تریگر ورود (معمولاً ۱ دقیقه‌ای) به‌عنوان یک رویداد مستقل.
- * با آن می‌توان شمرد چند تریگر داشتیم، چندتا معامله شد، چندتا نادیده گرفته شد یا نامعتبر بود.
- */
 export interface JournalTriggerEvent {
   id: string;
   sessionId: string;
-  timeframeOptionId: string | null;
+  timeframeOptionId: string;
   analysisEventId: string | null;
-  tradeId: string | null;
-  /** گزینه‌ای از دستهٔ entry_trigger */
+  /**
+   * همهٔ رویدادهای تحلیلِ مرتبط با این تریگر (چند تایم‌فریم).
+   * analysisEventId همچنان اولین مورد را برای سازگاری با داده‌های قبلی نگه می‌دارد.
+   */
+  analysisEventIds?: string[];
   triggerTypeOptionId: string | null;
-  triggerDescription: string;
-  /** چه اتفاقی روی تایم‌فریم تریگر افتاد؟ (حرکت بازار / نقدینگی گرفته‌شده) */
+  description: string;
   marketMovement: string;
-  entryReason: string;
-  confirmation: string;
-  direction: 'long' | 'short' | null;
-  status: JournalTriggerStatus;
+  directionOptionId: string | null;
+  confirmed: boolean;
+  status: 'pending' | 'ignored' | 'invalid' | 'converted';
   notes: string;
-  tags: string;
-  triggeredAt: number;
+  linkedTradeId: string | null;
+  /** Last direction copied from this trigger, used to avoid overwriting manual trade edits. */
+  linkedTradeDirection?: Trade['direction'] | null;
+  /** Last entry-trigger option copied from this event into JournalTradeData. */
+  linkedTradeEntryTriggerOptionId?: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -1080,6 +1079,7 @@ export interface JournalTradeData {
   setupGradeOptionId: string | null;
   scoTypeOptionId?: string | null;
   fvgTypeOptionId?: string | null;
+  scenarioOutcomeOptionId?: string | null;
   checklistResults: string;
   psychology: string;
   mistakeOptionIds: string;
@@ -1087,28 +1087,6 @@ export interface JournalTradeData {
   violatedRuleIds: string;
   setupQuality: number | null;
   executionQuality: number | null;
-  /** نتیجهٔ سناریوی تحلیل (مرور پس از معامله) */
-  scenarioOutcome?: 'played-out' | 'partially' | 'failed' | 'invalidated' | null;
-  scenarioOutcomeNotes?: string;
-  /** درس معامله — فقط در مرور پس از معامله ثبت می‌شود */
-  lesson?: string;
-  finalReflection?: string;
-  /** برچسب‌های مرور (idهای دستهٔ tag) */
-  reviewTagOptionIds?: string;
-  /** چه اتفاقی افتاد؟ (مرور پس از معامله) */
-  whatHappened?: string;
-  /** آیا ورود معتبر بود؟ */
-  entryValid?: 'yes' | 'partially' | 'no' | null;
-  /** آیا حد ضرر رعایت شد؟ */
-  slRespected?: 'yes' | 'partially' | 'no' | null;
-  /** آیا مدیریت معامله درست بود؟ */
-  managementCorrect?: 'yes' | 'partially' | 'no' | null;
-  /** واکنش احساسی پس از معامله (متن) */
-  emotionalReaction?: string;
-  /** کیفیت کلی معامله (۰ تا ۱۰) */
-  tradeQuality?: number | null;
-  /** کیفیت مدیریت ریسک (۰ تا ۱۰) */
-  riskManagementQuality?: number | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -1128,9 +1106,7 @@ export interface JournalMedia {
   sessionId: string | null;
   tradeId: string | null;
   analysisId: string | null;
-  /** تریگر ورود (JournalTriggerEvent) */
   triggerId?: string | null;
-  /** مرور معامله (JournalTradeData.id) */
   reviewId?: string | null;
   category: 'before-entry' | 'entry' | 'during-trade' | 'after-exit' | 'session' | 'analysis' | 'trigger' | 'review';
   fileName: string;
@@ -1184,7 +1160,7 @@ class TraderMindDB extends Dexie {
   journalSessions!: Table<JournalSession>;
   journalOptions!: Table<JournalOption>;
   journalSessionAnalyses!: Table<JournalSessionAnalysis>;
-  journalTriggers!: Table<JournalTriggerEvent>;
+  journalTriggerEvents!: Table<JournalTriggerEvent>;
   strategyVersions!: Table<StrategyVersion>;
   journalTradeData!: Table<JournalTradeData>;
   journalSessionEvents!: Table<JournalSessionEvent>;
@@ -1734,16 +1710,92 @@ class TraderMindDB extends Dexie {
       });
     });
 
-    // نسخه ۲۵ — جریان رویدادمحور سشن: تریگرهای ورود (جدول جدید) و اتصال رسانه به تریگر/مرور.
-    // فقط افزودنی است: هیچ جدول/ایندکس قبلی حذف یا بازنویسی نمی‌شود و داده‌ی قبلی دست‌نخورده می‌ماند.
+    // نسخه ۲۵ — تحلیل‌ها به‌صورت رویداد مستقل و افزودن رویدادهای Trigger.
     this.version(25).stores({
-      journalTriggers: 'id, sessionId, analysisEventId, tradeId, timeframeOptionId, status, createdAt, [sessionId+createdAt]',
+      ...baseStores,
+      trades: [
+        'id', 'sessionId', 'journalSessionId', 'journalAnalysisEventId', 'journalTriggerEventId',
+        'strategyId', 'accountId', 'boxId', 'symbol', 'direction', 'result', 'status', 'openedAt', 'closedAt',
+        '[symbol+openedAt]', '[accountId+openedAt]', '[strategyId+result]', '[strategyId+closedAt]',
+      ].join(', '),
+      symbolProfiles: 'id, symbol, assetClass',
+      learningAuditTrail: 'id, tradeId, type, createdAt',
+      profileSnapshots: 'id, createdAt',
+      profileCorrections: 'id, correctedAt',
+      knowledgeNotes: 'id, category, importance, source, status, isActive, isPinned, isRule, createdAt, updatedAt, lastReviewedAt, [category+isActive], [source+status]',
+      knowledgeCategories: 'id, name, isDefault, createdAt',
+      replayDatasets: 'id, symbol, timeframe, type, sourceTradeId, createdAt',
+      replaySessions: 'id, mode, status, symbol, datasetId, sourceTradeId, playlistId, createdAt',
+      replayDecisions: 'id, sessionId, step, action, createdAt, [sessionId+step]',
+      replayPlaylists: 'id, name, createdAt',
+      marketContextSessions: 'id, symbol, status, session, dayOfWeek, setupType, linkedTradeId, createdAt',
+      tradeEvents: 'id, tradeId, eventType, timestamp, createdAt',
+      tradeVersions: 'id, tradeId, changedAt',
+      riskProfiles: 'id',
+      riskViolations: 'id, tradeId, date, createdAt',
+      riskGroups: 'id, name, createdAt',
+      performanceReviews: 'id, periodKey, periodType, createdAt',
+      preTradeChecklists: 'id, isDefault, contextSymbol, contextSession, contextSetup, createdAt',
+      dailyFocus: 'id, date, createdAt',
+      chartScreenshots: 'id, symbol, timeframe, session, screenshotType, tradeId, groupId, date, createdAt, [tradeId+screenshotType], [symbol+date]',
+      screenshotGroups: 'id, symbol, tradeId, date, createdAt',
+      visualPatterns: 'id, name, createdAt',
+      screenshotCollections: 'id, name, isDefault, createdAt',
+      accounts: 'id, name, isDefault, isArchived, createdAt',
+      tradingBoxes: 'id, name, status, accountId, createdAt',
+      journalSessions: 'id, accountId, tradingBoxId, strategyId, strategyVersionId, status, startTime, endTime, [accountId+startTime], [tradingBoxId+startTime], [strategyId+startTime]',
+      journalOptions: 'id, category, enabled, sortOrder, [category+enabled]',
+      journalSessionAnalyses: 'id, sessionId, timeframeOptionId, createdAt, [sessionId+timeframeOptionId], [sessionId+createdAt]',
+      journalTriggerEvents: 'id, sessionId, timeframeOptionId, analysisEventId, linkedTradeId, status, createdAt, [sessionId+createdAt]',
+      strategyVersions: 'id, strategyId, versionNumber, createdAt',
+      journalTradeData: 'id, &tradeId, journalSessionId, setupGradeOptionId, strategyCompliance, [journalSessionId+createdAt]',
+      journalSessionEvents: 'id, sessionId, typeOptionId, eventAt, createdAt',
       journalMedia: 'id, sessionId, tradeId, analysisId, triggerId, reviewId, category, createdAt',
+    }).upgrade(async tx => {
+      await tx.table('journalSessions').toCollection().modify((session: JournalSession) => {
+        if (session.marketOptionId === undefined) session.marketOptionId = null;
+        if (session.preTradePsychology === undefined) session.preTradePsychology = '[]';
+        if (session.sessionQuality === undefined) session.sessionQuality = null;
+        if (session.finalReflection === undefined) session.finalReflection = '';
+      });
+      await tx.table('journalSessionAnalyses').toCollection().modify((analysis: JournalSessionAnalysis) => {
+        if (analysis.analysisText === undefined) analysis.analysisText = '';
+        if (analysis.marketContext === undefined) analysis.marketContext = '';
+        if (analysis.scenario === undefined) analysis.scenario = '';
+        if (analysis.triggerContext === undefined) analysis.triggerContext = '';
+        if (analysis.previousTradeId === undefined) analysis.previousTradeId = null;
+        if (analysis.nextTradeId === undefined) analysis.nextTradeId = null;
+      });
+      await tx.table('trades').toCollection().modify((trade: Trade) => {
+        if (trade.journalAnalysisEventId === undefined) trade.journalAnalysisEventId = null;
+        if (trade.journalTriggerEventId === undefined) trade.journalTriggerEventId = null;
+      });
+      await tx.table('journalTradeData').toCollection().modify((tradeData: JournalTradeData) => {
+        if (tradeData.scenarioOutcomeOptionId === undefined) tradeData.scenarioOutcomeOptionId = null;
+      });
+      await tx.table('journalMedia').toCollection().modify((item: JournalMedia) => {
+        if (item.triggerId === undefined) item.triggerId = null;
+        if (item.reviewId === undefined) item.reviewId = null;
+      });
+    });
+
+    // v26 — آماده‌سازی همگام‌سازی: updatedAt برای همه رکوردها + ثبت حذف‌ها
+    this.version(26).stores({
+      syncTombstones: 'id, table, deletedAt',
+      syncMeta: 'key',
+    }).upgrade(async tx => {
+      await backfillUpdatedAt(tx, this.tables.map(t => t.name));
+    });
+
+    // v27 — شناسه‌ی ثابت برای رکوردهای پیش‌فرض (گزینه‌ها، حساب، چک‌لیست، مجموعه‌ها)
+    this.version(27).stores({}).upgrade(async tx => {
+      await migrateToStableIds(tx, this.tables.map(t => t.name));
     });
   }
 }
 
 export const db = new TraderMindDB();
+installSyncHooks(db);
 
 /** مقادیر پیش‌فرض */
 export const defaultPreTradingState: PreTradingState = {

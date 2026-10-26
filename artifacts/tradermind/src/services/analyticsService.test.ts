@@ -11,7 +11,7 @@ import {
 import type { Trade, DailyJournal, Strategy } from '../db/database';
 
 // ── کمک‌های ساخت داده آزمون ──────────────────────────────
-function makeTradeRaw(overrides: Partial<Trade> = {}): Trade {
+function makeTrade(overrides: Partial<Trade> = {}): Trade {
   return {
     id: crypto.randomUUID(),
     strategyId: null,
@@ -46,20 +46,6 @@ function makeTradeRaw(overrides: Partial<Trade> = {}): Trade {
     createdAt: Date.now(),
     ...overrides,
   };
-}
-
-/**
- * نتیجهٔ معامله از علامت سود خالص تعیین می‌شود؛ پس اگر تست فقط `result` را
- * بدهد، سود/زیان هم‌جهت با آن ساخته می‌شود تا داده‌ی آزمون متناقض نباشد.
- */
-function makeTrade(overrides: Partial<Trade> = {}): Trade {
-  const trade = makeTradeRaw(overrides);
-  if (overrides.profitLoss === undefined && overrides.result) {
-    if (overrides.result === 'loss' || overrides.result === 'partial-loss') trade.profitLoss = -100;
-    else if (overrides.result === 'breakeven') trade.profitLoss = 0;
-    else if (overrides.result === 'win' || overrides.result === 'partial-win') trade.profitLoss = 100;
-  }
-  return trade;
 }
 
 function makeJournal(overrides: Partial<DailyJournal> = {}): DailyJournal {

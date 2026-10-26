@@ -34,17 +34,19 @@ import { getByDay, getBySession } from "../services/performanceService";
 import { useAppStore } from "../store/useAppStore";
 import { getTradingDateKey, getTradingDateRange, getTradingMonthKey } from "../lib/tradingTime";
 import { getNetPnl } from "../lib/tradeHelpers";
+import { DashboardOverview } from "../components/dashboard/DashboardOverview";
 
 // ══════════════════════════════════════════════════════════════════
 // ثوابت و نوع‌ها
 // ══════════════════════════════════════════════════════════════════
 
-type RangeKey = "today" | "week" | "month" | "custom";
+type RangeKey = "today" | "week" | "month" | "year" | "custom";
 
 const RANGE_LABELS: Record<RangeKey, string> = {
   today: "امروز",
   week: "این هفته",
   month: "این ماه",
+  year: "امسال",
   custom: "بازه دلخواه",
 };
 
@@ -173,16 +175,20 @@ export default function Dashboard() {
   const dashboardMessage = useAppStore(s => s.dashboardMessage);
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [rangeKey, setRangeKey] = useState<RangeKey>("week");
-  const [customFrom, setCustomFrom] = useState<string>(() => {
-    const d = new Date(); d.setDate(d.getDate() - 30);
-    return d.toISOString().split("T")[0];
-  });
-  const [customTo, setCustomTo] = useState<string>(() => new Date().toISOString().split("T")[0]);
+  const rangeKey = useAppStore(s => s.dashboardRange);
+  const setRangeKey = useAppStore(s => s.setDashboardRange);
+  const customFrom = useAppStore(s => s.dashboardCustomFrom);
+  const setCustomFrom = useAppStore(s => s.setDashboardCustomFrom);
+  const customTo = useAppStore(s => s.dashboardCustomTo);
+  const setCustomTo = useAppStore(s => s.setDashboardCustomTo);
   const [exportingBackup, setExportingBackup] = useState(false);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [tradingBoxes, setTradingBoxes] = useState<TradingBox[]>([]);
   const customFromRef = useRef<HTMLInputElement>(null);
+  const changeRange = useCallback((key: RangeKey) => {
+    setRangeKey(key);
+    if (key === "custom") setTimeout(() => customFromRef.current?.focus(), 50);
+  }, [setRangeKey]);
 
   const reload = useCallback(() => {
     loadDashboardData().then(setData).finally(() => setLoading(false));
@@ -495,11 +501,11 @@ export default function Dashboard() {
         </div>
         {/* دکمه‌های اصلی */}
         <div className="flex gap-2 shrink-0">
-          <Link href="/analysis/new">
+          <Link href="/journal/sessions">
             <Button className="gap-2">
               <ActivitySquare className="w-4 h-4" />
-              <span className="hidden sm:inline">شروع تحلیل جدید</span>
-              <span className="sm:hidden">تحلیل</span>
+              <span className="hidden sm:inline">شروع سشن معاملاتی</span>
+              <span className="sm:hidden">سشن جدید</span>
             </Button>
           </Link>
           <Link href="/journal/trades/new">
@@ -511,6 +517,19 @@ export default function Dashboard() {
           </Link>
         </div>
       </div>
+
+      {/* ━━━━━━━━━━━━━━━━ 1b. نمای کلی (KPI، Equity، توزیع) — فاز ۳ ━━━━━━━━━━━━━━━━ */}
+      <DashboardOverview
+        trades={rangedTrades}
+        strategyName={(id) => stratMap.get(id) ?? "استراتژی نامشخص"}
+        range={rangeKey}
+        onRangeChange={changeRange}
+        prev={prevRangedStats ? {
+          winRate: prevRangedStats.closedCount > 0 ? prevRangedStats.winRate : null,
+          profitFactor: prevRangedStats.profitFactor,
+          closedCount: prevRangedStats.closedCount,
+        } : null}
+      />
 
       {/* ━━━━━━━━━━━━━━━━ 2. تحلیل‌های نیمه‌کاره ━━━━━━━━━━━━━━━━ */}
       {inProgressSessions.length > 0 && (
@@ -609,31 +628,24 @@ export default function Dashboard() {
           </CardContent>
         </Card>
 
-        {/* شروع تحلیل جدید */}
+        {/* شروع سشن معاملاتی */}
         <Card className="flex flex-col justify-between bg-gradient-to-br from-primary/10 to-primary/5 border-primary/20">
           <CardContent className="p-6 flex flex-col h-full justify-between gap-4">
             <div>
               <div className="w-12 h-12 rounded-2xl bg-primary/20 flex items-center justify-center mb-4">
                 <ActivitySquare className="w-6 h-6 text-primary" />
               </div>
-              <h3 className="text-lg font-bold">شروع تحلیل جدید</h3>
+              <h3 className="text-lg font-bold">شروع سشن معاملاتی</h3>
               <p className="text-sm text-muted-foreground mt-1">
-                استراتژی خود را انتخاب کن و تحلیل گام‌به‌گام را شروع کن.
+                تحلیل تایم‌فریم‌های بالاتر و چند معاملهٔ ورود را در یک روز معاملاتی کنار هم ثبت کنید.
               </p>
             </div>
             <div className="flex gap-2">
-              <Link href="/analysis/new" className="flex-1">
+              <Link href="/journal/sessions" className="flex-1">
                 <Button className="w-full gap-2">
-                  <Plus className="w-4 h-4" /> شروع تحلیل
+                  <Plus className="w-4 h-4" /> شروع سشن
                 </Button>
               </Link>
-              {lastUsedStrategy && (
-                <Link href={`/analysis/new?strategyId=${lastUsedStrategy.strategy.id}`}>
-                  <Button variant="outline" size="icon" title="شروع با آخرین استراتژی">
-                    <Zap className="w-4 h-4" />
-                  </Button>
-                </Link>
-              )}
             </div>
           </CardContent>
         </Card>
@@ -651,7 +663,7 @@ export default function Dashboard() {
               {(Object.entries(RANGE_LABELS) as [RangeKey, string][]).map(([key, label]) => (
                 <button
                   key={key}
-                  onClick={() => { setRangeKey(key); if (key === "custom") setTimeout(() => customFromRef.current?.focus(), 50); }}
+                  onClick={() => changeRange(key)}
                   className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${
                     rangeKey === key
                       ? "bg-background shadow text-foreground"
@@ -713,6 +725,7 @@ export default function Dashboard() {
               <StatCard
                 label="میانگین R"
                 value={rangedStats.avgR != null ? `${rangedStats.avgR.toFixed(2)}R` : "—"}
+                hint="میانگین حسابی R معاملات بستهٔ دارای مقدار R ثبت‌شده"
                 valueClass={
                   rangedStats.avgR == null ? undefined
                   : rangedStats.avgR >= 0 ? "text-emerald-500"
@@ -1394,14 +1407,15 @@ function KpiCard({
   );
 }
 
-function StatCard({ label, value, sub, valueClass }: {
-  label: string; value: string; sub?: string; valueClass?: string;
+function StatCard({ label, value, sub, hint, valueClass }: {
+  label: string; value: string; sub?: string; hint?: string; valueClass?: string;
 }) {
   return (
     <div className="p-3 rounded-xl border bg-card/50 space-y-1">
       <p className="text-xs text-muted-foreground">{label}</p>
       <p className={`text-xl font-bold ${valueClass ?? ""}`}>{value}</p>
       {sub && <p className="text-xs text-muted-foreground">{sub}</p>}
+      {hint && <p className="text-[11px] text-muted-foreground">{hint}</p>}
     </div>
   );
 }

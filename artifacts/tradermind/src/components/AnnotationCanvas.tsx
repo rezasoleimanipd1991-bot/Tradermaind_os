@@ -13,6 +13,7 @@ import {
   ANNOTATION_LABELS,
 } from '../types/screenshot';
 import { Button } from './ui/button';
+import { VoiceTypingButton } from './ui/VoiceTypingButton';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import {
   MapPin, Minus, Minus as MinusIcon, Square, Crosshair, X, RotateCcw, Eye, EyeOff
@@ -58,6 +59,7 @@ function uid(): string {
 }
 
 function AnnotationCanvas({ imageDataUrl, annotations, onChange, readOnly = false }: Props) {
+  const labelInputRef = useRef<HTMLInputElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
@@ -484,14 +486,20 @@ function AnnotationCanvas({ imageDataUrl, annotations, onChange, readOnly = fals
         return (
           <div className="flex flex-wrap items-center gap-2 rounded-lg border border-primary/20 bg-primary/5 p-2">
             <span className="text-xs text-muted-foreground">ویرایش حاشیه‌نویسی:</span>
-            <input
-              value={selected.label}
-              onChange={e => onChange(annotations.map(annotation =>
-                annotation.id === selected.id ? { ...annotation, label: e.target.value } : annotation
-              ))}
-              className="h-7 min-w-36 flex-1 rounded-md border border-border bg-background px-2 text-xs"
-              aria-label="عنوان حاشیه‌نویسی"
-            />
+            <div className="min-w-36 flex-1">
+              <div className="flex h-5 justify-end">
+                <VoiceTypingButton targetRef={labelInputRef} />
+              </div>
+              <input
+                ref={labelInputRef}
+                value={selected.label}
+                onChange={e => onChange(annotations.map(annotation =>
+                  annotation.id === selected.id ? { ...annotation, label: e.target.value } : annotation
+                ))}
+                className="h-7 w-full rounded-md border border-border bg-background px-2 text-xs"
+                aria-label="عنوان حاشیه‌نویسی"
+              />
+            </div>
             <input
               type="color"
               value={selected.color.startsWith('#') ? selected.color.slice(0, 7) : '#f59e0b'}

@@ -7,9 +7,7 @@
 
 import { Trade, DailyJournal, Strategy } from '../db/database';
 import { getAllTradesForAnalytics } from '../core/repositories/tradeRepository';
-import { isWin, isLoss, isClosed, getNetPnl, getResolvedR } from '../lib/tradeHelpers';
-import { computeProfitFactor } from '../core/metrics/profitFactor';
-import { computeExpectancy } from '../core/metrics/expectancy';
+import { isWin, isLoss, isClosed, getNetPnl } from '../lib/tradeHelpers';
 import { getTradingDateKey } from '../lib/tradingTime';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -76,15 +74,22 @@ async function computeAnalyticsCache(): Promise<CachedAnalytics> {
   const losses = closed.filter(isLoss);
   const n = closed.length;
 
-  // آمار پایه — همه از موتور مرکزی (سود خالص، علامت‌محور)
-  const profitFactor = computeProfitFactor(closed).profitFactor;
-  const exp = computeExpectancy(closed);
-  const Rs = closed.map(getResolvedR).filter((r): r is number => r !== null);
+  // آمار پایه
+  const totalWinPnl = wins.reduce((s, t) => s + Math.max(0, t.profitLoss ?? 0), 0);
+  const totalLossPnl = Math.abs(losses.reduce((s, t) => s + Math.min(0, t.profitLoss ?? 0), 0));
+  const profitFactor = totalLossPnl > 0 ? totalWinPnl / totalLossPnl : null;
+
+  const Rs = closed.filter(t => t.rMultiple !== null).map(t => t.rMultiple!);
+  const winRs = wins.filter(t => t.rMultiple !== null).map(t => t.rMultiple!);
+  const lossRs = losses.filter(t => t.rMultiple !== null).map(t => t.rMultiple!);
   const averageR = Rs.length ? Rs.reduce((s, v) => s + v, 0) / Rs.length : null;
 
   const winRate = n > 0 ? wins.length / n : null;
   const lossRate = n > 0 ? losses.length / n : null;
-  const expectancy = exp.expectancy;
+  const avgWinR = winRs.length ? winRs.reduce((s, v) => s + v, 0) / winRs.length : null;
+  const avgLossR = lossRs.length ? lossRs.reduce((s, v) => s + v, 0) / lossRs.length : null;
+  const expectancy = winRate !== null && lossRate !== null && avgWinR !== null && avgLossR !== null
+    ? winRate * avgWinR + lossRate * avgLossR : null;
   const totalPnl = closed.reduce((s, t) => s + (getNetPnl(t) ?? 0), 0);
 
   // Daily stats
@@ -96,7 +101,7 @@ async function computeAnalyticsCache(): Promise<CachedAnalytics> {
   }
   const dailyStats: DailyStats[] = [...byDay.entries()].map(([date, { trades: dt }]) => {
     const dWins = dt.filter(isWin);
-    const dRs = dt.map(getResolvedR).filter((r): r is number => r !== null);
+    const dRs = dt.filter(t => t.rMultiple !== null).map(t => t.rMultiple!);
     return {
       date,
       trades: dt.length,
@@ -116,7 +121,7 @@ async function computeAnalyticsCache(): Promise<CachedAnalytics> {
   }
   const symbolStats: SymbolStats[] = [...bySymbol.entries()].map(([symbol, st]) => {
     const sWins = st.filter(isWin);
-    const sRs = st.map(getResolvedR).filter((r): r is number => r !== null);
+    const sRs = st.filter(t => t.rMultiple !== null).map(t => t.rMultiple!);
     return {
       symbol,
       trades: st.length,

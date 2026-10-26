@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { toast } from 'sonner';
 import { db } from '../db/database';
 import type { RiskProfileData, RiskUnit, SessionRule, SetupRule } from '../services/riskService';
+import { VoiceTypingButton } from '../components/ui/VoiceTypingButton';
 
 // ─────────────────────────────────────────────────────────────────
 // Helpers
@@ -289,10 +290,13 @@ export default function RiskProfile() {
           <CardContent className="space-y-3">
             {setupRules.map((r, i) => (
               <div key={i} className="flex items-center gap-3">
-                <input type="text" value={r.setup} onChange={e => {
-                  const u = [...setupRules]; u[i] = { ...u[i], setup: e.target.value }; setSetupRules(u);
-                }} placeholder="نام ستاپ (مثلاً OB)" dir="ltr"
-                  className="flex-1 h-9 rounded-lg border border-border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring" />
+                <div className="min-w-0 flex-1 space-y-0.5">
+                  <div className="flex h-5 justify-end"><VoiceTypingButton /></div>
+                  <input type="text" value={r.setup} onChange={e => {
+                    const u = [...setupRules]; u[i] = { ...u[i], setup: e.target.value }; setSetupRules(u);
+                  }} placeholder="نام ستاپ (مثلاً OB)" dir="ltr"
+                    className="h-9 w-full rounded-lg border border-border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring" />
+                </div>
                 <input type="number" value={r.maxRiskPct} onChange={e => {
                   const u = [...setupRules]; u[i] = { ...u[i], maxRiskPct: parseFloat(e.target.value) }; setSetupRules(u);
                 }} className="w-20 h-9 rounded-lg border border-border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring" />

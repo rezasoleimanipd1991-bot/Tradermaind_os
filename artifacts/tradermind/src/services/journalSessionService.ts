@@ -1,3 +1,7 @@
+import { runAsRemote } from '../db/syncSupport';
+import { stableOptionId } from '../db/defaultIds';
+import { kvStore } from './storageService';
+import { exportAnalysisFieldConfig, importAnalysisFieldConfig } from './journalAnalysisFieldLabels';
 import {
   db,
   type Account,
@@ -8,17 +12,17 @@ import {
   type JournalSessionEvent,
   type JournalTradeData,
   type JournalTriggerEvent,
-  type JournalTriggerStatus,
   type Strategy,
   type StrategyVersion,
   type Trade,
 } from '../db/database';
-import { getNetPnl, getResolvedR, isBreakEven, isClosed, isLoss, isWin } from '../lib/tradeHelpers';
-import { tradeService } from './tradeService';
+import { getNetPnl, isBreakEven, isClosed, isLoss, isWin } from '../lib/tradeHelpers';
+import { isTradingBoxAvailableForAccount } from './tradingBoxService';
+import { triggerAnalysisIds } from '../lib/triggerAnalysis';
 
 export const JOURNAL_OPTION_CATEGORIES = [
-  { id: 'timeframe', label: 'تایم‌فریم' },
-  { id: 'entry_trigger', label: 'تریگر ورود' },
+  { id: 'timeframe', label: 'بازهٔ زمانی' },
+  { id: 'entry_trigger', label: 'محرک ورود' },
   { id: 'exit_reason', label: 'دلیل خروج' },
   { id: 'entry_reason', label: 'دلیل ورود' },
   { id: 'psychology', label: 'حالت روانی' },
@@ -28,6 +32,8 @@ export const JOURNAL_OPTION_CATEGORIES = [
   { id: 'setup_type', label: 'نوع ستاپ' },
   { id: 'setup_grade', label: 'درجه ستاپ' },
   { id: 'market_condition', label: 'شرایط بازار' },
+  { id: 'market', label: 'بازار' },
+  { id: 'scenario_outcome', label: 'نتیجهٔ سناریو' },
   { id: 'liquidity_type', label: 'نوع نقدینگی' },
   { id: 'mistake', label: 'اشتباه' },
   { id: 'tag', label: 'برچسب' },
@@ -38,47 +44,203 @@ export const JOURNAL_OPTION_CATEGORIES = [
   { id: 'direction', label: 'جهت بازار' },
   { id: 'market_structure', label: 'ساختار بازار' },
   { id: 'session_event_type', label: 'رویداد بدون معامله' },
-  { id: 'sco_type', label: 'نوع SCO' },
-  { id: 'fvg_type', label: 'نوع FVG' },
+  { id: 'sco_type', label: 'نوع شکست ساختار (SCO)' },
+  { id: 'fvg_type', label: 'نوع شکاف ارزش منصفانه (FVG)' },
+  { id: 'forward_zone', label: 'نواحی پیش رو' },
 ] as const;
 
 export type JournalOptionCategory = typeof JOURNAL_OPTION_CATEGORIES[number]['id'];
 
+/** دسته‌های ساخته‌شده توسط کاربر به‌صورت یک رکورد ویژه در همین جدول گزینه‌ها ذخیره می‌شوند تا خودکار همگام شوند. */
+export const CUSTOM_CATEGORY_RECORD = '__category__';
+/** دسته‌های داخلی که کاربر «حذف» کرده است (برای همگام‌سازی، به‌صورت رکورد گزینه ذخیره می‌شوند؛ عنوان = شناسهٔ دسته). */
+export const HIDDEN_CATEGORY_RECORD = '__hidden_category__';
+const ANALYSIS_CONFIG_RECORD = '__config__';
+const ANALYSIS_CONFIG_RECORD_ID = 'cfg-analysis-fields';
+/** دسته‌هایی که کل ساختار سشن و تحلیل به آن‌ها وابسته است و حذفشان برنامه را از کار می‌اندازد. */
+export const PROTECTED_CATEGORY_IDS: readonly string[] = ['timeframe', 'entry_trigger', 'session_event_type'];
+/** هر دسته در کدام فرم‌ها استفاده می‌شود؛ دسته‌های بدون ورودی در هیچ فرمی دیده نمی‌شوند. */
+export const CATEGORY_USAGE: Record<string, string> = {
+  timeframe: 'تایم‌فریم تحلیل‌ها و تریگرها در سشن (ضروری)',
+  entry_trigger: 'نوع تریگر در سشن و «تریگرهای ورود» در مرور معامله (ضروری)',
+  exit_reason: 'مرور معامله: دلیل خروج',
+  entry_reason: 'مرور معامله: دلیل ورود',
+  psychology: 'حالت روانی قبل از سشن و روانشناسی قبل/حین/بعد در مرور معامله',
+  emotion: 'در هیچ فرم ژورنالی استفاده نمی‌شود',
+  strategy_rule: 'در هیچ فرمی استفاده نمی‌شود',
+  checklist: 'مرور معامله: چک‌لیست ورود',
+  setup_type: 'مرور معامله: نوع ستاپ',
+  setup_grade: 'مرور معامله: درجه ستاپ',
+  market_condition: 'در هیچ فرمی استفاده نمی‌شود',
+  market: 'ساخت سشن: بازار',
+  scenario_outcome: 'نتیجهٔ سناریو در تحلیل سشن و مرور معامله',
+  liquidity_type: 'فقط به‌عنوان گزینهٔ پیش‌فرض فیلد چک‌باکسی تحلیل',
+  mistake: 'مرور معامله: اشتباه‌ها و گزارش‌ها',
+  tag: 'در هیچ فرمی استفاده نمی‌شود',
+  obstacle: 'در هیچ فرمی استفاده نمی‌شود',
+  trade_management: 'در هیچ فرمی استفاده نمی‌شود',
+  session_type: 'ساخت سشن: نوع سشن',
+  review_category: 'در هیچ فرمی استفاده نمی‌شود',
+  direction: 'فیلد «جهت مورد انتظار» در تحلیل',
+  market_structure: 'فقط برای نمایش سوابق قدیمی',
+  session_event_type: 'رویداد بدون معامله در سشن (ضروری)',
+  sco_type: 'مرور معامله: نوع SCO',
+  fvg_type: 'مرور معامله: نوع FVG',
+  forward_zone: 'فیلد چک‌باکسی «نواحی پیش رو» در تحلیل',
+};
+export interface JournalCategoryInfo { id: string; label: string; custom: boolean }
+
 const DEFAULT_OPTIONS: Record<JournalOptionCategory, string[]> = {
-  timeframe: ['1M', '5M', '15M', '30M', '1H', '4H', 'Daily', 'Weekly'],
-  entry_trigger: ['Liquidity Hunt', 'SCO', 'FVG Candle', 'Mitigation', 'Order Block'],
-  exit_reason: ['TP', 'SL', 'Manual Exit', 'Structure Changed', 'Liquidity Taken', 'Psychology', 'Risk Reduction', 'Strategy Invalidated'],
-  entry_reason: ['Strategy Setup', 'Breakout', 'Pullback', 'Liquidity Sweep', 'Custom'],
-  psychology: ['Calm', 'Fear', 'FOMO', 'Revenge', 'Hesitation', 'Greed', 'Overconfidence', 'Impatience', 'Stress', 'Anxiety'],
-  emotion: ['Calm', 'Confident', 'Focused', 'Fearful', 'Anxious', 'Frustrated', 'Greedy', 'Impatient'],
+  timeframe: ['1M', '5M', '15M', '30M', '1H', '4H', 'روزانه', 'هفتگی'],
+  entry_trigger: ['شکار نقدینگی', 'SCO', 'کندل FVG', 'بازآزمایی ناحیه', 'بلاک سفارش'],
+  exit_reason: ['حد سود', 'حد ضرر', 'خروج دستی', 'تغییر ساختار', 'جمع‌آوری نقدینگی', 'وضعیت روانی', 'کاهش ریسک', 'ابطال استراتژی'],
+  entry_reason: ['ستاپ استراتژی', 'شکست', 'پولبک', 'جاروب نقدینگی', 'سفارشی'],
+  psychology: ['آرامش', 'ترس', 'فومو', 'معاملهٔ انتقامی', 'تردید', 'طمع', 'اعتمادبه‌نفس بیش‌ازحد', 'بی‌صبری', 'فشار روانی', 'اضطراب'],
+  emotion: ['آرامش', 'اعتمادبه‌نفس', 'تمرکز', 'ترس', 'اضطراب', 'کلافگی', 'طمع', 'بی‌صبری'],
   strategy_rule: [],
-  checklist: ['HTF Direction Confirmed', 'Liquidity Swept', 'Trigger Confirmed', 'Momentum Valid', 'No Major Obstacle', 'Risk Valid'],
-  setup_type: ['Continuation', 'Reversal', 'Breakout', 'Pullback', 'Range', 'Liquidity Sweep'],
-  setup_grade: ['A+', 'A', 'B', 'C', 'Invalid'],
-  market_condition: ['Trending', 'Ranging', 'High Volatility', 'Low Volatility', 'News'],
-  liquidity_type: ['Equal Highs', 'Equal Lows', 'Previous High', 'Previous Low', 'Session High/Low'],
-  mistake: ['Early Entry', 'Late Entry', 'FOMO', 'Revenge Trade', 'Ignored Rule', 'Ignored Obstacle', 'Oversized Position', 'Moved SL', 'Closed Early'],
-  tag: ['A Setup', 'Needs Review'],
-  obstacle: ['Mitigation Wall', 'Order Block', 'Fair Value Gap', 'News Event'],
-  trade_management: ['Moved Stop Loss', 'Partial Close', 'Added to Position', 'Reduced Position', 'Manual Exit'],
-  session_type: ['Asia', 'London', 'London/New York Overlap', 'New York', 'Custom'],
-  review_category: ['Execution', 'Risk', 'Psychology', 'Market Context', 'Strategy'],
-  direction: ['Bullish', 'Bearish', 'Neutral'],
-  market_structure: ['Uptrend', 'Downtrend', 'Range', 'Breakout', 'Reversal'],
-  session_event_type: ['Valid Setup — No Trade', 'Missed Trade', 'Invalid Setup', 'Observed Setup'],
+  checklist: ['جهت تایم‌فریم بالاتر تأیید شد', 'نقدینگی جمع‌آوری شد', 'تریگر تأیید شد', 'مومنتوم معتبر است', 'مانع مهمی وجود ندارد', 'ریسک معتبر است'],
+  setup_type: ['ادامهٔ روند', 'بازگشت روند', 'شکست', 'پولبک', 'محدوده', 'جاروب نقدینگی'],
+  setup_grade: ['A+', 'A', 'B', 'C', 'نامعتبر'],
+  market_condition: ['رونددار', 'محدوده‌ای', 'نوسان زیاد', 'نوسان کم', 'خبر'],
+  market: ['فارکس', 'رمزارز', 'سهام', 'شاخص‌ها', 'کالاها', 'قراردادهای آتی', 'سایر'],
+  scenario_outcome: ['مطابق سناریو', 'تا حدی مطابق', 'باطل‌شده', 'فعال‌نشده', 'نامشخص'],
+  liquidity_type: ['سقف‌های برابر', 'کف‌های برابر', 'سقف قبلی', 'کف قبلی', 'سقف/کف سشن'],
+  mistake: ['ورود زودهنگام', 'ورود دیرهنگام', 'فومو', 'معاملهٔ انتقامی', 'نادیده‌گرفتن قانون', 'نادیده‌گرفتن مانع', 'حجم بیش‌ازحد', 'جابجایی حد ضرر', 'خروج زودهنگام'],
+  tag: ['ستاپ A', 'نیازمند بازبینی'],
+  obstacle: ['ناحیهٔ بازآزمایی', 'بلاک سفارش', 'شکاف ارزش منصفانه', 'رویداد خبری'],
+  trade_management: ['جابجایی حد ضرر', 'بستن بخشی از معامله', 'افزودن به موقعیت', 'کاهش موقعیت', 'خروج دستی'],
+  session_type: ['آسیا', 'لندن', 'همپوشانی لندن و نیویورک', 'نیویورک', 'سفارشی'],
+  review_category: ['اجرا', 'ریسک', 'روان‌شناسی', 'زمینهٔ بازار', 'استراتژی'],
+  direction: ['صعودی', 'نزولی', 'خنثی'],
+  market_structure: ['روند صعودی', 'روند نزولی', 'محدوده', 'شکست', 'بازگشت'],
+  session_event_type: ['ستاپ معتبر، بدون معامله', 'معاملهٔ ازدست‌رفته', 'ستاپ نامعتبر', 'ستاپ مشاهده‌شده'],
   sco_type: [],
   fvg_type: [],
+  forward_zone: ['High مینور', 'Low مینور', 'High ماژور', 'Low ماژور', 'تمام سطوح دارای نقدینگی'],
 };
+
+const LATE_ADDED_OPTION_CATEGORIES: readonly JournalOptionCategory[] = ['forward_zone'];
+
+const DEFAULT_OPTION_TRANSLATIONS: Record<string, string> = {
+  'Daily': 'روزانه',
+  'Weekly': 'هفتگی',
+  'Liquidity Hunt': 'شکار نقدینگی',
+  'FVG Candle': 'کندل FVG',
+  'Mitigation': 'بازآزمایی ناحیه',
+  'Order Block': 'بلاک سفارش',
+  'TP': 'حد سود',
+  'SL': 'حد ضرر',
+  'Manual Exit': 'خروج دستی',
+  'Structure Changed': 'تغییر ساختار',
+  'Liquidity Taken': 'جمع‌آوری نقدینگی',
+  'Psychology': 'وضعیت روانی',
+  'Risk Reduction': 'کاهش ریسک',
+  'Strategy Invalidated': 'ابطال استراتژی',
+  'Strategy Setup': 'ستاپ استراتژی',
+  'Breakout': 'شکست',
+  'Pullback': 'پولبک',
+  'Liquidity Sweep': 'جاروب نقدینگی',
+  'Custom': 'سفارشی',
+  'Calm': 'آرامش',
+  'Fear': 'ترس',
+  'FOMO': 'فومو',
+  'Revenge': 'معاملهٔ انتقامی',
+  'Hesitation': 'تردید',
+  'Greed': 'طمع',
+  'Overconfidence': 'اعتمادبه‌نفس بیش‌ازحد',
+  'Impatience': 'بی‌صبری',
+  'Stress': 'فشار روانی',
+  'Anxiety': 'اضطراب',
+  'Confident': 'اعتمادبه‌نفس',
+  'Focused': 'تمرکز',
+  'Fearful': 'ترس',
+  'Anxious': 'اضطراب',
+  'Frustrated': 'کلافگی',
+  'Greedy': 'طمع',
+  'Impatient': 'بی‌صبری',
+  'HTF Direction Confirmed': 'جهت تایم‌فریم بالاتر تأیید شد',
+  'Liquidity Swept': 'نقدینگی جمع‌آوری شد',
+  'Trigger Confirmed': 'تریگر تأیید شد',
+  'Momentum Valid': 'مومنتوم معتبر است',
+  'No Major Obstacle': 'مانع مهمی وجود ندارد',
+  'Risk Valid': 'ریسک معتبر است',
+  'Continuation': 'ادامهٔ روند',
+  'Reversal': 'بازگشت روند',
+  'Range': 'محدوده',
+  'Invalid': 'نامعتبر',
+  'Trending': 'رونددار',
+  'Ranging': 'محدوده‌ای',
+  'High Volatility': 'نوسان زیاد',
+  'Low Volatility': 'نوسان کم',
+  'News': 'خبر',
+  'Forex': 'فارکس',
+  'Crypto': 'رمزارز',
+  'Stocks': 'سهام',
+  'Indices': 'شاخص‌ها',
+  'Commodities': 'کالاها',
+  'Futures': 'قراردادهای آتی',
+  'Other': 'سایر',
+  'Matched': 'مطابق سناریو',
+  'Partially Matched': 'تا حدی مطابق',
+  'Invalidated': 'باطل‌شده',
+  'Not Triggered': 'فعال‌نشده',
+  'Unclear': 'نامشخص',
+  'Equal Highs': 'سقف‌های برابر',
+  'Equal Lows': 'کف‌های برابر',
+  'Previous High': 'سقف قبلی',
+  'Previous Low': 'کف قبلی',
+  'Session High/Low': 'سقف/کف سشن',
+  'Early Entry': 'ورود زودهنگام',
+  'Late Entry': 'ورود دیرهنگام',
+  'Revenge Trade': 'معاملهٔ انتقامی',
+  'Ignored Rule': 'نادیده‌گرفتن قانون',
+  'Ignored Obstacle': 'نادیده‌گرفتن مانع',
+  'Oversized Position': 'حجم بیش‌ازحد',
+  'Moved SL': 'جابجایی حد ضرر',
+  'Closed Early': 'خروج زودهنگام',
+  'A Setup': 'ستاپ A',
+  'Needs Review': 'نیازمند بازبینی',
+  'Mitigation Wall': 'ناحیهٔ بازآزمایی',
+  'Fair Value Gap': 'شکاف ارزش منصفانه',
+  'News Event': 'رویداد خبری',
+  'Moved Stop Loss': 'جابجایی حد ضرر',
+  'Partial Close': 'بستن بخشی از معامله',
+  'Added to Position': 'افزودن به موقعیت',
+  'Reduced Position': 'کاهش موقعیت',
+  'Asia': 'آسیا',
+  'London': 'لندن',
+  'London/New York Overlap': 'همپوشانی لندن و نیویورک',
+  'New York': 'نیویورک',
+  'Execution': 'اجرا',
+  'Risk': 'ریسک',
+  'Market Context': 'زمینهٔ بازار',
+  'Strategy': 'استراتژی',
+  'Bullish': 'صعودی',
+  'Bearish': 'نزولی',
+  'Neutral': 'خنثی',
+  'Uptrend': 'روند صعودی',
+  'Downtrend': 'روند نزولی',
+  'Valid Setup — No Trade': 'ستاپ معتبر، بدون معامله',
+  'Missed Trade': 'معاملهٔ ازدست‌رفته',
+  'Invalid Setup': 'ستاپ نامعتبر',
+  'Observed Setup': 'ستاپ مشاهده‌شده',
+};
+
+export function localizeJournalOptionLabel(_category: string, label: string): string {
+  return DEFAULT_OPTION_TRANSLATIONS[label] ?? label;
+}
 
 export interface CreateJournalSessionInput {
   accountId: string;
   tradingBoxId: string;
   strategyId: string;
   symbols: string[];
+  marketOptionId?: string | null;
   startTime: number;
   sessionTypeOptionId?: string | null;
   notes?: string;
   tags?: string[];
+  preTradePsychologyOptionIds?: string[];
 }
 
 export interface JournalSessionBundle {
@@ -94,6 +256,12 @@ export interface JournalSessionBundle {
   media: JournalMedia[];
   options: JournalOption[];
 }
+
+export type JournalSessionTimelineItem =
+  | { id: string; kind: 'analysis'; timestamp: number; record: JournalSessionAnalysis }
+  | { id: string; kind: 'trigger'; timestamp: number; record: JournalTriggerEvent }
+  | { id: string; kind: 'trade'; timestamp: number; record: Trade }
+  | { id: string; kind: 'event'; timestamp: number; record: JournalSessionEvent };
 
 export interface JournalSessionMetrics {
   totalTrades: number;
@@ -166,6 +334,11 @@ function psychologyHasOption(value: string | undefined, optionId: string): boole
   }
 }
 
+/** گزینه‌ی پیش‌فرض: شناسه‌ی قطعی + updatedAt صفر تا هیچ‌وقت نسخه‌ی ویرایش‌شده را بازنویسی نکند */
+function seedOption(category: string, label: string, sortOrder: number, now: number): JournalOption {
+  return { ...optionRecord(category, label, sortOrder, now), id: stableOptionId(category, label), updatedAt: 0 } as JournalOption;
+}
+
 function optionRecord(
   category: string,
   label: string,
@@ -181,6 +354,40 @@ function optionRecord(
     enabled: true,
     required,
     sortOrder,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function tradeDirectionFromOption(option: JournalOption | undefined | null): Trade['direction'] | null {
+  if (!option || option.category !== 'direction') return null;
+  const label = localizeJournalOptionLabel(option.category, option.label).trim().toLocaleLowerCase();
+  if (['صعودی', 'خرید', 'long', 'buy', 'bullish', 'up'].includes(label)) return 'long';
+  if (['نزولی', 'فروش', 'short', 'sell', 'bearish', 'down'].includes(label)) return 'short';
+  return null;
+}
+
+function blankJournalTradeData(tradeId: string, journalSessionId: string, now: number): JournalTradeData {
+  const emptyPhase = { optionIds: [] as string[], intensity: 0 };
+  return {
+    id: tradeId,
+    tradeId,
+    journalSessionId,
+    entryTriggerOptionIds: '[]',
+    entryReasonOptionId: null,
+    exitReasonOptionId: null,
+    setupTypeOptionId: null,
+    setupGradeOptionId: null,
+    scoTypeOptionId: null,
+    fvgTypeOptionId: null,
+    scenarioOutcomeOptionId: null,
+    checklistResults: '{}',
+    psychology: JSON.stringify({ before: emptyPhase, during: emptyPhase, after: emptyPhase }),
+    mistakeOptionIds: '[]',
+    strategyCompliance: null,
+    violatedRuleIds: '[]',
+    setupQuality: null,
+    executionQuality: null,
     createdAt: now,
     updatedAt: now,
   };
@@ -217,140 +424,40 @@ async function createVersionSnapshot(strategyId: string): Promise<StrategyVersio
   };
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// جریان رویدادمحور سشن: Analysis → Trigger → Trade → Review
-// ────────────────────────────────────────────────────────────────────────────
+export { triggerAnalysisIds };
 
-export type SessionTimelineItem =
-  | { kind: 'analysis'; id: string; at: number; analysis: JournalSessionAnalysis; media: JournalMedia[] }
-  | { kind: 'trigger'; id: string; at: number; trigger: JournalTriggerEvent; media: JournalMedia[] }
-  | { kind: 'trade-open'; id: string; at: number; trade: Trade; media: JournalMedia[] }
-  | { kind: 'trade-result'; id: string; at: number; trade: Trade; resultLabel: string; resultTone: 'win' | 'loss' | 'neutral' }
-  | { kind: 'event'; id: string; at: number; event: JournalSessionEvent };
-
-/** ترتیب نمایش وقتی زمان چند رویداد برابر است (مثلاً تریگر و ورود هم‌زمان) */
-const TIMELINE_RANK: Record<SessionTimelineItem['kind'], number> = {
-  analysis: 0, trigger: 1, 'trade-open': 2, 'trade-result': 3, event: 4,
-};
-
-export interface AnalysisEventInput {
-  sessionId: string;
-  timeframeOptionId: string;
-  directionOptionId?: string | null;
-  marketStructureOptionId?: string | null;
-  expectedDirectionOptionId?: string | null;
-  liquidityContextOptionIds?: string[];
-  zones?: string;
-  notes?: string;
-  tags?: string[];
-  analysisText?: string;
-  scenario?: string;
-  triggerContext?: string;
-  marketContext?: string;
-  previousTradeId?: string | null;
-}
-
-export interface TriggerEventInput {
-  sessionId: string;
-  timeframeOptionId?: string | null;
-  analysisEventId?: string | null;
-  tradeId?: string | null;
-  triggerTypeOptionId?: string | null;
-  triggerDescription?: string;
-  marketMovement?: string;
-  entryReason?: string;
-  confirmation?: string;
-  direction?: 'long' | 'short' | null;
-  status?: JournalTriggerStatus;
-  notes?: string;
-  tags?: string[];
-  triggeredAt?: number;
-}
-
-export interface SessionSummary extends JournalSessionMetrics {
-  analysisCount: number;
-  triggerCount: number;
-  triggersTraded: number;
-  triggersSkipped: number;
-  triggersInvalid: number;
-  noTradeEvents: number;
-}
-
-/**
- * ساخت تایم‌لاین سشن (تابع خالص، بدون دسترسی به DB).
- * هر معامله دو گره دارد: «ورود» و (در صورت بسته بودن) «نتیجه».
- */
-export function buildSessionTimeline(input: {
-  analyses: JournalSessionAnalysis[];
-  triggers: JournalTriggerEvent[];
-  trades: Trade[];
-  tradeData?: JournalTradeData[];
-  events: JournalSessionEvent[];
-  media: JournalMedia[];
-  options: JournalOption[];
-}): SessionTimelineItem[] {
-  const mediaFor = (pick: (m: JournalMedia) => string | null | undefined, id: string) =>
-    input.media.filter(m => pick(m) === id).sort((a, b) => a.createdAt - b.createdAt);
-  const optionLabel = (id: string | null | undefined) =>
-    id ? input.options.find(o => o.id === id)?.label ?? null : null;
-  const dataByTrade = new Map((input.tradeData ?? []).map(d => [d.tradeId, d]));
-
-  const items: SessionTimelineItem[] = [];
-  for (const analysis of input.analyses) {
-    items.push({ kind: 'analysis', id: analysis.id, at: analysis.createdAt, analysis, media: mediaFor(m => m.analysisId, analysis.id) });
+async function assertAnalysesBelongToSession(analysisIds: string[], sessionId: string): Promise<void> {
+  for (const analysisId of analysisIds) {
+    const analysis = await db.journalSessionAnalyses.get(analysisId);
+    if (!analysis || analysis.sessionId !== sessionId) throw new Error('تحلیل انتخاب‌شده به این سشن تعلق ندارد.');
   }
-  for (const trigger of input.triggers) {
-    items.push({ kind: 'trigger', id: trigger.id, at: trigger.triggeredAt ?? trigger.createdAt, trigger, media: mediaFor(m => m.triggerId, trigger.id) });
-  }
-  for (const trade of input.trades) {
-    items.push({ kind: 'trade-open', id: `${trade.id}:open`, at: trade.openedAt, trade, media: mediaFor(m => m.tradeId, trade.id) });
-    if (isClosed(trade)) {
-      const net = getNetPnl(trade);
-      const exitLabel = optionLabel(dataByTrade.get(trade.id)?.exitReasonOptionId);
-      // اگر دلیل خروج TP/SL ثبت شده همان نمایش داده می‌شود؛ وگرنه از علامت سود خالص
-      const isTpSl = exitLabel !== null && /^(tp|sl)$/i.test(exitLabel.trim());
-      const tone: 'win' | 'loss' | 'neutral' = net === null ? 'neutral' : net > 0 ? 'win' : net < 0 ? 'loss' : 'neutral';
-      const fallback = tone === 'win' ? 'سود' : tone === 'loss' ? 'زیان' : 'سر به سر';
-      items.push({
-        kind: 'trade-result', id: `${trade.id}:result`, at: trade.closedAt ?? trade.openedAt, trade,
-        resultLabel: isTpSl ? exitLabel!.trim().toUpperCase() : fallback, resultTone: tone,
-      });
-    }
-  }
-  for (const event of input.events) {
-    items.push({ kind: 'event', id: event.id, at: event.eventAt, event });
-  }
-  return items.sort((a, b) => a.at - b.at || TIMELINE_RANK[a.kind] - TIMELINE_RANK[b.kind]);
-}
-
-export interface PreTradePsychology { optionIds: string[]; intensity: number; notes: string }
-
-export function parsePreTradePsychology(value: string | undefined | null): PreTradePsychology {
-  const empty: PreTradePsychology = { optionIds: [], intensity: 0, notes: '' };
-  if (!value) return empty;
-  try {
-    const parsed = JSON.parse(value) as Partial<PreTradePsychology>;
-    return {
-      optionIds: Array.isArray(parsed.optionIds) ? parsed.optionIds.filter((x): x is string => typeof x === 'string') : [],
-      intensity: typeof parsed.intensity === 'number' && Number.isFinite(parsed.intensity) ? parsed.intensity : 0,
-      notes: typeof parsed.notes === 'string' ? parsed.notes : '',
-    };
-  } catch { return empty; }
 }
 
 export const journalSessionService = {
   async ensureDefaultOptions(): Promise<void> {
     await db.transaction('rw', db.journalOptions, async () => {
-      if (await db.journalOptions.count()) return;
       const now = Date.now();
-      const records = Object.entries(DEFAULT_OPTIONS).flatMap(([category, labels]) =>
-        labels.map((label, index) => optionRecord(category, label, index, now)),
-      );
-      if (records.length) await db.journalOptions.bulkAdd(records);
+      if (!(await db.journalOptions.count())) {
+        const records = Object.entries(DEFAULT_OPTIONS).flatMap(([category, labels]) =>
+          labels.map((label, index) => seedOption(category, label, index, now)),
+        );
+        if (records.length) await runAsRemote(() => db.journalOptions.bulkAdd(records));
+        return;
+      }
+      // دسته‌هایی که بعد از ساخت دیتابیس به برنامه اضافه شده‌اند (مثل «نواحی پیش رو»)
+      // برای کاربران قدیمی هم یک‌بار با گزینه‌های پیش‌فرض ساخته می‌شوند.
+      for (const category of LATE_ADDED_OPTION_CATEGORIES) {
+        if (kvStore.get<boolean>(`late-seeded-${category}`)) continue;
+        if (await db.journalOptions.where('category').equals(category).count()) { kvStore.set(`late-seeded-${category}`, true); continue; }
+        kvStore.set(`late-seeded-${category}`, true);
+        const labels = DEFAULT_OPTIONS[category];
+        if (labels.length) await runAsRemote(() => db.journalOptions.bulkAdd(labels.map((label, index) => seedOption(category, label, index, now))));
+      }
     });
   },
 
   async getOptions(category?: string, includeDisabled = false): Promise<JournalOption[]> {
+    await this.hydrateAnalysisFieldConfig();
     const records = category
       ? await db.journalOptions.where('category').equals(category).toArray()
       : await db.journalOptions.toArray();
@@ -385,6 +492,106 @@ export const journalSessionService = {
     await db.journalOptions.update(id, { ...patch, label, description: patch.description.trim(), updatedAt: Date.now() });
   },
 
+  async getCustomCategories(): Promise<JournalCategoryInfo[]> {
+    const records = await db.journalOptions.where('category').equals(CUSTOM_CATEGORY_RECORD).toArray();
+    return records
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt - b.createdAt)
+      .map(record => ({ id: record.id, label: record.label, custom: true }));
+  },
+
+  async createCategory(rawLabel: string): Promise<JournalCategoryInfo> {
+    const label = rawLabel.trim();
+    if (!label) throw new Error('نام دسته نمی‌تواند خالی باشد.');
+    const existing = await this.getCustomCategories();
+    const taken = [...JOURNAL_OPTION_CATEGORIES.map(item => item.label), ...existing.map(item => item.label)];
+    if (taken.some(name => name.trim().toLocaleLowerCase() === label.toLocaleLowerCase())) throw new Error('دسته‌ای با این نام از قبل وجود دارد.');
+    const record = optionRecord(CUSTOM_CATEGORY_RECORD, label, existing.length, Date.now());
+    await db.journalOptions.add(record);
+    return { id: record.id, label, custom: true };
+  },
+
+  async renameCategory(id: string, rawLabel: string): Promise<void> {
+    const label = rawLabel.trim();
+    if (!label) throw new Error('نام دسته نمی‌تواند خالی باشد.');
+    const record = await db.journalOptions.get(id);
+    if (!record || record.category !== CUSTOM_CATEGORY_RECORD) throw new Error('دسته پیدا نشد.');
+    const others = (await this.getCustomCategories()).filter(item => item.id !== id).map(item => item.label);
+    const taken = [...JOURNAL_OPTION_CATEGORIES.map(item => item.label), ...others];
+    if (taken.some(name => name.trim().toLocaleLowerCase() === label.toLocaleLowerCase())) throw new Error('دسته‌ای با این نام از قبل وجود دارد.');
+    await db.journalOptions.update(id, { label, updatedAt: Date.now() });
+  },
+
+  /** حذف یک دستهٔ شخصی همراه همهٔ گزینه‌هایش. دسته‌های داخلی برنامه حذف نمی‌شوند. */
+  async deleteCategory(id: string): Promise<void> {
+    const record = await db.journalOptions.get(id);
+    if (!record || record.category !== CUSTOM_CATEGORY_RECORD) throw new Error('فقط دسته‌های ساخته‌شده توسط خودتان قابل حذف هستند.');
+    const items = await db.journalOptions.where('category').equals(id).toArray();
+    await db.transaction('rw', db.journalOptions, async () => {
+      for (const item of items) await db.journalOptions.delete(item.id);
+      await db.journalOptions.delete(id);
+    });
+  },
+
+  /** عنوان، چیدمان و فیلدهای حذف‌شدهٔ تحلیل را در یک رکورد همگام‌شونده ذخیره می‌کند. */
+  async saveAnalysisFieldConfig(): Promise<void> {
+    const now = Date.now();
+    await db.journalOptions.put({
+      id: ANALYSIS_CONFIG_RECORD_ID, category: ANALYSIS_CONFIG_RECORD, label: 'analysis-field-config',
+      description: exportAnalysisFieldConfig(), enabled: true, required: false, sortOrder: 0, createdAt: now, updatedAt: now,
+    });
+    kvStore.set('analysis-config-synced-at', now);
+  },
+
+  /** اگر دستگاه دیگری تنظیمات فیلدها را عوض کرده باشد، آن را روی این دستگاه اعمال می‌کند. */
+  async hydrateAnalysisFieldConfig(): Promise<void> {
+    const record = await db.journalOptions.get(ANALYSIS_CONFIG_RECORD_ID);
+    if (!record) return;
+    const syncedAt = kvStore.get<number>('analysis-config-synced-at') ?? 0;
+    if (record.updatedAt <= syncedAt) return;
+    importAnalysisFieldConfig(record.description);
+    kvStore.set('analysis-config-synced-at', record.updatedAt);
+  },
+
+  async getHiddenCategoryIds(): Promise<string[]> {
+    const records = await db.journalOptions.where('category').equals(HIDDEN_CATEGORY_RECORD).toArray();
+    return [...new Set(records.map(record => record.label))];
+  },
+
+  /** حذف یک دستهٔ داخلی از فهرست و فرم‌ها. گزینه‌ها و سوابق دست‌نخورده می‌مانند و دسته قابل بازگردانی است. */
+  async hideCategory(id: string): Promise<void> {
+    if (PROTECTED_CATEGORY_IDS.includes(id)) throw new Error('این دسته برای کار سشن و تحلیل ضروری است و حذف نمی‌شود.');
+    if (!JOURNAL_OPTION_CATEGORIES.some(category => category.id === id)) throw new Error('دسته پیدا نشد.');
+    if ((await this.getHiddenCategoryIds()).includes(id)) return;
+    await db.journalOptions.add(optionRecord(HIDDEN_CATEGORY_RECORD, id, 0, Date.now()));
+  },
+
+  async restoreCategory(id: string): Promise<void> {
+    const records = await db.journalOptions.where('category').equals(HIDDEN_CATEGORY_RECORD).toArray();
+    await db.transaction('rw', db.journalOptions, async () => {
+      for (const record of records.filter(item => item.label === id)) await db.journalOptions.delete(record.id);
+    });
+  },
+
+  /** حذف دائمی یک گزینه. رکوردهای قدیمی که به آن اشاره دارند، به‌جای عنوان «حذف‌شده» نشان می‌دهند. */
+  async deleteOption(id: string): Promise<void> {
+    const existing = await db.journalOptions.get(id);
+    if (!existing) throw new Error('گزینه پیدا نشد.');
+    if (LATE_ADDED_OPTION_CATEGORIES.includes(existing.category as JournalOptionCategory)) {
+      kvStore.set(`late-seeded-${existing.category}`, true);
+    }
+    await db.journalOptions.delete(id);
+  },
+
+  /** حذف دائمی همهٔ گزینه‌های یک دسته. تعداد حذف‌شده‌ها را برمی‌گرداند. */
+  async deleteCategoryOptions(category: string): Promise<number> {
+    const items = await db.journalOptions.where('category').equals(category).toArray();
+    if (LATE_ADDED_OPTION_CATEGORIES.includes(category as JournalOptionCategory)) kvStore.set(`late-seeded-${category}`, true);
+    await db.transaction('rw', db.journalOptions, async () => {
+      for (const item of items) await db.journalOptions.delete(item.id);
+    });
+    return items.length;
+  },
+
   async setOptionEnabled(id: string, enabled: boolean): Promise<void> {
     if (!(await db.journalOptions.get(id))) throw new Error('گزینه پیدا نشد.');
     await db.journalOptions.update(id, { enabled, updatedAt: Date.now() });
@@ -415,8 +622,19 @@ export const journalSessionService = {
     ]);
     if (!account || account.isArchived) throw new Error('حساب فعال و معتبری انتخاب نشده است.');
     if (!box || box.status !== 'active') throw new Error('باکس معاملاتی فعال و معتبری انتخاب نشده است.');
-    if (box.accountId && box.accountId !== account.id) throw new Error('این باکس متعلق به حساب انتخاب‌شده نیست.');
+    if (!isTradingBoxAvailableForAccount(box, account)) throw new Error('این باکس برای حساب انتخاب‌شده مجاز نیست.');
     if (!strategy) throw new Error('استراتژی انتخاب‌شده پیدا نشد.');
+    const symbols = [...new Set(input.symbols.map(value => value.trim().toUpperCase()).filter(Boolean))];
+    if (symbols.length !== 1) throw new Error('هر سشن باید دقیقاً یک نماد داشته باشد.');
+    if (input.marketOptionId) {
+      const market = await db.journalOptions.get(input.marketOptionId);
+      if (!market || market.category !== 'market' || !market.enabled) throw new Error('بازار معتبری انتخاب نشده است.');
+    }
+    const preTradePsychologyOptionIds = [...new Set(input.preTradePsychologyOptionIds ?? [])];
+    for (const optionId of preTradePsychologyOptionIds) {
+      const option = await db.journalOptions.get(optionId);
+      if (!option || option.category !== 'psychology' || !option.enabled) throw new Error('یکی از گزینه‌های حالت روانی معتبر نیست.');
+    }
 
     const version = await createVersionSnapshot(input.strategyId);
     const now = Date.now();
@@ -426,18 +644,22 @@ export const journalSessionService = {
       tradingBoxId: input.tradingBoxId,
       strategyId: input.strategyId,
       strategyVersionId: version.id,
-      symbols: JSON.stringify([...new Set(input.symbols.map(value => value.trim().toUpperCase()).filter(Boolean))]),
+      symbols: JSON.stringify(symbols),
+      marketOptionId: input.marketOptionId ?? null,
       startTime: input.startTime,
       endTime: null,
       status: 'active',
       sessionTypeOptionId: input.sessionTypeOptionId ?? null,
       notes: input.notes?.trim() ?? '',
       tags: JSON.stringify(input.tags ?? []),
+      preTradePsychology: JSON.stringify(preTradePsychologyOptionIds),
       lessonsLearned: '',
       mistakesReview: '',
       psychologicalReview: '',
       strategyObservations: '',
       strategyChangeProposal: '',
+      sessionQuality: null,
+      finalReflection: '',
       createdAt: now,
       updatedAt: now,
     };
@@ -476,7 +698,7 @@ export const journalSessionService = {
       db.strategies.get(session.strategyId),
       db.strategyVersions.get(session.strategyVersionId),
       db.journalSessionAnalyses.where('sessionId').equals(id).sortBy('createdAt'),
-      db.journalTriggers.where('sessionId').equals(id).sortBy('createdAt'),
+      db.journalTriggerEvents.where('sessionId').equals(id).sortBy('createdAt'),
       db.trades.where('journalSessionId').equals(id).toArray(),
       db.journalTradeData.where('journalSessionId').equals(id).toArray(),
       db.journalSessionEvents.where('sessionId').equals(id).sortBy('eventAt'),
@@ -487,27 +709,326 @@ export const journalSessionService = {
   },
 
   async saveAnalysis(
-    input: Omit<JournalSessionAnalysis, 'id' | 'createdAt' | 'updatedAt'>,
+    input: Omit<JournalSessionAnalysis, 'id' | 'createdAt' | 'updatedAt'> & { id?: string },
   ): Promise<JournalSessionAnalysis> {
     const [session, timeframe] = await Promise.all([
       db.journalSessions.get(input.sessionId),
       db.journalOptions.get(input.timeframeOptionId),
     ]);
     if (!session) throw new Error('سشن پیدا نشد.');
-    if (!timeframe || timeframe.category !== 'timeframe') throw new Error('تایم‌فریم معتبر انتخاب نشده است.');
-    const existing = await db.journalSessionAnalyses
-      .where('[sessionId+timeframeOptionId]')
-      .equals([input.sessionId, input.timeframeOptionId])
-      .first();
-    const now = Date.now();
+    if (!timeframe || timeframe.category !== 'timeframe' || (!timeframe.enabled && !input.id)) {
+      throw new Error('تایم‌فریم معتبر و فعالی انتخاب نشده است.');
+    }
+    const existing = input.id ? await db.journalSessionAnalyses.get(input.id) : undefined;
+    if (input.id && (!existing || existing.sessionId !== input.sessionId)) throw new Error('رویداد تحلیل پیدا نشد.');
+    for (const tradeId of [input.previousTradeId, input.nextTradeId]) {
+      if (!tradeId) continue;
+      const linkedTrade = await db.trades.get(tradeId);
+      if (!linkedTrade || linkedTrade.journalSessionId !== input.sessionId) throw new Error('معاملهٔ پیوندشده به این سشن تعلق ندارد.');
+    }
+    if (input.scenarioOutcomeOptionId) {
+      const outcome = await db.journalOptions.get(input.scenarioOutcomeOptionId);
+      if (!outcome || outcome.category !== 'scenario_outcome') throw new Error('نتیجهٔ سناریوی انتخاب‌شده معتبر نیست.');
+    }
+    let now = Date.now();
+    let createdAt = existing?.createdAt ?? now;
+    if (!existing) {
+      // ترتیب ساخت رویدادها همان ترتیب انتخاب تایم‌فریم‌هاست؛ پس زمان ساخت باید
+      // حتی در یک میلی‌ثانیهٔ مشترک هم اکیداً صعودی باشد.
+      const siblings = await db.journalSessionAnalyses.where('sessionId').equals(input.sessionId).toArray();
+      const latest = siblings.reduce((max, item) => Math.max(max, item.createdAt), 0);
+      if (latest >= now) now = latest + 1;
+      createdAt = now;
+    }
     const record: JournalSessionAnalysis = {
       ...input,
       id: existing?.id ?? uid(),
-      createdAt: existing?.createdAt ?? now,
+      createdAt,
       updatedAt: now,
+      analysisText: input.analysisText ?? '',
+      marketContext: input.marketContext ?? '',
+      scenario: input.scenario ?? '',
+      triggerContext: input.triggerContext ?? '',
+      momentumText: input.momentumText ?? '',
+      pricePositionText: input.pricePositionText ?? '',
+      directionLogicText: input.directionLogicText ?? '',
+      fieldSelections: input.fieldSelections ?? '{}',
+      scenarioOutcomeOptionId: input.scenarioOutcomeOptionId ?? null,
+      scenarioOutcomeNote: input.scenarioOutcomeNote ?? '',
+      previousTradeId: input.previousTradeId ?? null,
+      nextTradeId: input.nextTradeId ?? null,
     };
     await db.journalSessionAnalyses.put(record);
     return record;
+  },
+
+  async createAnalysisEvent(input: Omit<JournalSessionAnalysis, 'id' | 'createdAt' | 'updatedAt'>): Promise<JournalSessionAnalysis> {
+    return this.saveAnalysis(input);
+  },
+
+  async updateAnalysisEvent(id: string, input: Omit<JournalSessionAnalysis, 'id' | 'createdAt' | 'updatedAt'>): Promise<JournalSessionAnalysis> {
+    return this.saveAnalysis({ ...input, id });
+  },
+
+  async deleteAnalysisEvent(id: string): Promise<void> {
+    const analysis = await db.journalSessionAnalyses.get(id);
+    if (!analysis) return;
+    await db.transaction('rw', db.journalSessionAnalyses, db.journalTriggerEvents, db.journalMedia, async () => {
+      const sessionTriggers = await db.journalTriggerEvents.where('sessionId').equals(analysis.sessionId).toArray();
+      for (const trigger of sessionTriggers) {
+        const ids = triggerAnalysisIds(trigger);
+        if (!ids.includes(id)) continue;
+        const remaining = ids.filter(analysisId => analysisId !== id);
+        await db.journalTriggerEvents.update(trigger.id, {
+          analysisEventIds: remaining,
+          analysisEventId: remaining[0] ?? null,
+        });
+      }
+      await db.journalMedia.where('analysisId').equals(id).modify({ analysisId: null, category: 'session' });
+      await db.journalSessionAnalyses.delete(id);
+    });
+  },
+
+  async createTriggerEvent(
+    input: Omit<JournalTriggerEvent, 'id' | 'createdAt' | 'updatedAt' | 'linkedTradeId' | 'status'> & {
+      status?: JournalTriggerEvent['status'];
+    },
+  ): Promise<JournalTriggerEvent> {
+    const [session, timeframe, triggerType, direction] = await Promise.all([
+      db.journalSessions.get(input.sessionId),
+      db.journalOptions.get(input.timeframeOptionId),
+      input.triggerTypeOptionId ? db.journalOptions.get(input.triggerTypeOptionId) : Promise.resolve(undefined),
+      input.directionOptionId ? db.journalOptions.get(input.directionOptionId) : Promise.resolve(undefined),
+    ]);
+    if (!session) throw new Error('سشن پیدا نشد.');
+    if (!timeframe || timeframe.category !== 'timeframe' || !timeframe.enabled) throw new Error('تایم‌فریم معتبر و فعالی انتخاب نشده است.');
+    const analysisEventIds = [...new Set([
+      ...(input.analysisEventIds ?? []),
+      ...(input.analysisEventId ? [input.analysisEventId] : []),
+    ])];
+    await assertAnalysesBelongToSession(analysisEventIds, session.id);
+    if (input.triggerTypeOptionId && (!triggerType || triggerType.category !== 'entry_trigger' || !triggerType.enabled)) throw new Error('نوع تریگر معتبر نیست.');
+    if (input.directionOptionId && (!direction || direction.category !== 'direction' || !direction.enabled)) throw new Error('جهت انتخاب‌شده معتبر نیست.');
+    const now = Date.now();
+    const event: JournalTriggerEvent = {
+      ...input,
+      analysisEventId: input.analysisEventId ?? analysisEventIds[0] ?? null,
+      analysisEventIds,
+      id: uid(),
+      status: input.status ?? 'pending',
+      linkedTradeId: null,
+      linkedTradeDirection: null,
+      linkedTradeEntryTriggerOptionId: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await db.journalTriggerEvents.add(event);
+    return event;
+  },
+
+  async updateTriggerEvent(
+    id: string,
+    patch: Partial<Pick<JournalTriggerEvent,
+      | 'status'
+      | 'confirmed'
+      | 'notes'
+      | 'timeframeOptionId'
+      | 'analysisEventId'
+      | 'analysisEventIds'
+      | 'triggerTypeOptionId'
+      | 'description'
+      | 'marketMovement'
+      | 'directionOptionId'
+    >>,
+  ): Promise<void> {
+    const event = await db.journalTriggerEvents.get(id);
+    if (!event) throw new Error('رویداد تریگر پیدا نشد.');
+    if (event.linkedTradeId && patch.status && patch.status !== 'converted') {
+      throw new Error('تریگرِ پیوندخورده به معامله را نمی‌توان به وضعیت دیگری تغییر داد.');
+    }
+    if ('timeframeOptionId' in patch) {
+      const option = patch.timeframeOptionId ? await db.journalOptions.get(patch.timeframeOptionId) : undefined;
+      if (!option || option.category !== 'timeframe') throw new Error('بازهٔ زمانی معتبر انتخاب نشده است.');
+    }
+    if ('analysisEventId' in patch && patch.analysisEventId) {
+      const analysis = await db.journalSessionAnalyses.get(patch.analysisEventId);
+      if (!analysis || analysis.sessionId !== event.sessionId) throw new Error('تحلیل انتخاب‌شده به این سشن تعلق ندارد.');
+    }
+    if ('analysisEventIds' in patch) {
+      patch = { ...patch, analysisEventIds: [...new Set(patch.analysisEventIds ?? [])] };
+      await assertAnalysesBelongToSession(patch.analysisEventIds ?? [], event.sessionId);
+      patch.analysisEventId = patch.analysisEventIds?.[0] ?? null;
+    }
+    if ('triggerTypeOptionId' in patch && patch.triggerTypeOptionId) {
+      const option = await db.journalOptions.get(patch.triggerTypeOptionId);
+      if (!option || option.category !== 'entry_trigger') throw new Error('نوع تریگر معتبر انتخاب نشده است.');
+    }
+    if ('directionOptionId' in patch && patch.directionOptionId) {
+      const option = await db.journalOptions.get(patch.directionOptionId);
+      if (!option || option.category !== 'direction') throw new Error('جهت انتخاب‌شده معتبر نیست.');
+    }
+    const previousDirectionOption = event.directionOptionId
+      ? await db.journalOptions.get(event.directionOptionId)
+      : undefined;
+    const nextDirectionOption = 'directionOptionId' in patch && patch.directionOptionId
+      ? await db.journalOptions.get(patch.directionOptionId)
+      : undefined;
+    const now = Date.now();
+
+    await db.transaction('rw', [db.journalTriggerEvents, db.trades, db.journalTradeData], async () => {
+      const current = await db.journalTriggerEvents.get(id);
+      if (!current) throw new Error('رویداد تریگر پیدا نشد.');
+      if (current.linkedTradeId && patch.status && patch.status !== 'converted') {
+        throw new Error('تریگرِ پیوندخورده به معامله را نمی‌توان به وضعیت دیگری تغییر داد.');
+      }
+
+      const eventPatch: Partial<JournalTriggerEvent> = { ...patch, updatedAt: now };
+      if (current.linkedTradeId) {
+        const trade = await db.trades.get(current.linkedTradeId);
+        if (!trade) throw new Error('معاملهٔ پیوندخورده به تریگر پیدا نشد.');
+        const tradePatch: Partial<Trade> = {};
+
+        if ('analysisEventId' in patch || 'analysisEventIds' in patch) {
+          tradePatch.journalAnalysisEventId = patch.analysisEventId ?? null;
+        }
+
+        if ('directionOptionId' in patch) {
+          const previouslyAppliedDirection = current.linkedTradeDirection
+            ?? tradeDirectionFromOption(previousDirectionOption);
+          const nextDirection = tradeDirectionFromOption(nextDirectionOption);
+          if (previouslyAppliedDirection && trade.direction === previouslyAppliedDirection) {
+            if (nextDirection) {
+              tradePatch.direction = nextDirection;
+              eventPatch.linkedTradeDirection = nextDirection;
+            } else {
+              eventPatch.linkedTradeDirection = previouslyAppliedDirection;
+            }
+          } else {
+            // A difference means the user chose a trade direction independently.
+            eventPatch.linkedTradeDirection = null;
+          }
+        }
+
+        if ('triggerTypeOptionId' in patch) {
+          const previouslyAppliedOptionId = current.linkedTradeEntryTriggerOptionId
+            ?? current.triggerTypeOptionId;
+          const nextOptionId = patch.triggerTypeOptionId ?? null;
+          const tradeData = await db.journalTradeData.where('tradeId').equals(trade.id).first();
+          const selectedOptionIds = parseArray(tradeData?.entryTriggerOptionIds);
+          let nextOptionIds = selectedOptionIds;
+          let shouldWriteTradeData = false;
+          let linkedTradeEntryTriggerOptionId: string | null = null;
+
+          if (previouslyAppliedOptionId && selectedOptionIds.includes(previouslyAppliedOptionId)) {
+            nextOptionIds = selectedOptionIds.filter(optionId => optionId !== previouslyAppliedOptionId);
+            if (nextOptionId && !nextOptionIds.includes(nextOptionId)) nextOptionIds.push(nextOptionId);
+            shouldWriteTradeData = true;
+            linkedTradeEntryTriggerOptionId = nextOptionId && nextOptionIds.includes(nextOptionId)
+              ? nextOptionId
+              : null;
+          } else if (!previouslyAppliedOptionId && nextOptionId) {
+            nextOptionIds = selectedOptionIds.includes(nextOptionId)
+              ? selectedOptionIds
+              : [...selectedOptionIds, nextOptionId];
+            shouldWriteTradeData = true;
+            linkedTradeEntryTriggerOptionId = nextOptionId;
+          }
+
+          if (shouldWriteTradeData) {
+            const nextTradeData = tradeData
+              ? { ...tradeData, entryTriggerOptionIds: JSON.stringify(nextOptionIds), updatedAt: now }
+              : blankJournalTradeData(trade.id, current.sessionId, now);
+            if (!tradeData && nextOptionId) {
+              nextTradeData.entryTriggerOptionIds = JSON.stringify(nextOptionIds);
+            }
+            await db.journalTradeData.put(nextTradeData);
+          }
+          eventPatch.linkedTradeEntryTriggerOptionId = linkedTradeEntryTriggerOptionId;
+        }
+
+        if (Object.keys(tradePatch).length) await db.trades.update(trade.id, tradePatch);
+      }
+
+      await db.journalTriggerEvents.update(id, eventPatch);
+    });
+  },
+
+  async linkTriggerToTrade(
+    triggerId: string,
+    tradeId: string,
+    options: { applyTriggerDirection?: boolean } = {},
+  ): Promise<void> {
+    await db.transaction('rw', [db.journalTriggerEvents, db.trades, db.journalTradeData, db.journalSessions, db.journalOptions], async () => {
+      const [trigger, trade] = await Promise.all([
+        db.journalTriggerEvents.get(triggerId),
+        db.trades.get(tradeId),
+      ]);
+      if (!trigger || !trade) throw new Error('تریگر یا معامله پیدا نشد.');
+      if (!trigger.confirmed) throw new Error('برای ثبت معامله، تریگر باید تأیید شده باشد.');
+      if (trigger.linkedTradeId && trigger.linkedTradeId !== trade.id) throw new Error('این تریگر قبلاً به معاملهٔ دیگری وصل شده است.');
+      if (trade.journalSessionId && trade.journalSessionId !== trigger.sessionId) throw new Error('معامله به سشن دیگری تعلق دارد.');
+      const session = await db.journalSessions.get(trigger.sessionId);
+      if (!session) throw new Error('سشن ژورنال برای اتصال معامله پیدا نشد.');
+
+      const [directionOption, tradeData] = await Promise.all([
+        trigger.directionOptionId ? db.journalOptions.get(trigger.directionOptionId) : Promise.resolve(undefined),
+        db.journalTradeData.where('tradeId').equals(trade.id).first(),
+      ]);
+      const triggerDirection = tradeDirectionFromOption(directionOption);
+      const tradePatch: Partial<Trade> = {
+        journalSessionId: trigger.sessionId,
+        journalTriggerEventId: trigger.id,
+        journalAnalysisEventId: trigger.analysisEventId ?? triggerAnalysisIds(trigger)[0] ?? null,
+        accountId: trade.accountId ?? session.accountId,
+        boxId: trade.boxId ?? session.tradingBoxId,
+        strategyId: trade.strategyId ?? session.strategyId,
+        symbol: trade.symbol || parseArray(session.symbols)[0] || '',
+      };
+      if (options.applyTriggerDirection && triggerDirection) {
+        tradePatch.direction = triggerDirection;
+      }
+      const linkedTradeDirection = options.applyTriggerDirection
+        ? triggerDirection
+        : (trade.direction === triggerDirection ? triggerDirection : null);
+
+      await db.trades.update(trade.id, {
+        ...tradePatch,
+      });
+
+      let linkedTradeEntryTriggerOptionId: string | null = null;
+      if (trigger.triggerTypeOptionId) {
+        const entryTriggerOptionIds = parseArray(tradeData?.entryTriggerOptionIds);
+        if (!entryTriggerOptionIds.includes(trigger.triggerTypeOptionId)) {
+          entryTriggerOptionIds.push(trigger.triggerTypeOptionId);
+        }
+        const now = Date.now();
+        const nextTradeData = tradeData
+          ? { ...tradeData, entryTriggerOptionIds: JSON.stringify(entryTriggerOptionIds), updatedAt: now }
+          : blankJournalTradeData(trade.id, trigger.sessionId, now);
+        nextTradeData.entryTriggerOptionIds = JSON.stringify(entryTriggerOptionIds);
+        await db.journalTradeData.put(nextTradeData);
+        linkedTradeEntryTriggerOptionId = trigger.triggerTypeOptionId;
+      }
+
+      await db.journalTriggerEvents.update(trigger.id, {
+        linkedTradeId: trade.id,
+        status: 'converted',
+        linkedTradeDirection,
+        linkedTradeEntryTriggerOptionId,
+        updatedAt: Date.now(),
+      });
+    });
+  },
+
+  async getTimeline(sessionId: string): Promise<JournalSessionTimelineItem[]> {
+    const bundle = await this.getBundle(sessionId);
+    if (!bundle) return [];
+    return [
+      ...bundle.analyses.map(record => ({ id: record.id, kind: 'analysis' as const, timestamp: record.createdAt, record })),
+      ...bundle.triggers.map(record => ({ id: record.id, kind: 'trigger' as const, timestamp: record.createdAt, record })),
+      ...bundle.trades.map(record => ({ id: record.id, kind: 'trade' as const, timestamp: record.closedAt ?? record.openedAt, record })),
+      ...bundle.events.map(record => ({ id: record.id, kind: 'event' as const, timestamp: record.eventAt, record })),
+    ].sort((a, b) => a.timestamp - b.timestamp);
   },
 
   async saveTradeData(input: Omit<JournalTradeData, 'id' | 'createdAt' | 'updatedAt'>): Promise<JournalTradeData> {
@@ -523,11 +1044,7 @@ export const journalSessionService = {
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     };
-    await db.transaction('rw', db.journalTradeData, db.trades, async () => {
-      await db.journalTradeData.put(record);
-      // درس معامله فقط در مرور ثبت می‌شود؛ برای صفحاتی که Trade.lesson را می‌خوانند همگام نگه داشته می‌شود
-      if (typeof input.lesson === 'string') await db.trades.update(input.tradeId, { lesson: input.lesson.trim() || null });
-    });
+    await db.journalTradeData.put(record);
     return record;
   },
 
@@ -559,6 +1076,10 @@ export const journalSessionService = {
     caption?: string;
   }): Promise<JournalMedia> {
     if (!input.file.size) throw new Error('فایل خالی است.');
+    if (input.triggerId) {
+      const trigger = await db.journalTriggerEvents.get(input.triggerId);
+      if (!trigger || (input.sessionId && trigger.sessionId !== input.sessionId)) throw new Error('تریگر انتخاب‌شده معتبر نیست.');
+    }
     const record: JournalMedia = {
       id: uid(),
       sessionId: input.sessionId ?? null,
@@ -573,7 +1094,9 @@ export const journalSessionService = {
       caption: input.caption?.trim() ?? '',
       createdAt: Date.now(),
     };
-    if (!record.sessionId && !record.tradeId && !record.analysisId && !record.triggerId && !record.reviewId) throw new Error('فایل باید به سشن، تحلیل، تریگر، معامله یا مرور وصل باشد.');
+    if (!record.sessionId && !record.tradeId && !record.analysisId && !record.triggerId && !record.reviewId) {
+      throw new Error('فایل باید به سشن، معامله، تحلیل، تریگر یا مرور وصل باشد.');
+    }
     await db.journalMedia.add(record);
     return record;
   },
@@ -587,25 +1110,19 @@ export const journalSessionService = {
   },
 
   calculateMetrics(trades: Trade[]): JournalSessionMetrics {
-    const settled = trades.filter(isClosed);
+    const settled = trades.filter(trade =>
+      isClosed(trade)
+      && ['win', 'partial-win', 'loss', 'partial-loss', 'breakeven'].includes(trade.result),
+    );
     const wins = settled.filter(isWin).length;
     const losses = settled.filter(isLoss).length;
     const breakeven = settled.filter(isBreakEven).length;
     const pnls = settled.map(getNetPnl).filter((value): value is number => value !== null);
     const totalProfit = pnls.filter(value => value > 0).reduce((sum, value) => sum + value, 0);
     const totalLoss = Math.abs(pnls.filter(value => value < 0).reduce((sum, value) => sum + value, 0));
-    const rTrades = settled
-      .map(trade => ({ trade, r: getResolvedR(trade) }))
-      .filter((x): x is { trade: Trade; r: number } => x.r !== null);
-    const rs = rTrades.map(x => x.r);
-    // بهترین/بدترین معامله: بر اساس R؛ اگر R موجود نباشد بر اساس سود خالص
-    const ranked = rTrades.length
-      ? [...rTrades].sort((a, b) => a.r - b.r).map(x => x.trade)
-      : settled
-          .map(trade => ({ trade, net: getNetPnl(trade) }))
-          .filter((x): x is { trade: Trade; net: number } => x.net !== null)
-          .sort((a, b) => a.net - b.net)
-          .map(x => x.trade);
+    const rTrades = settled.filter(trade => trade.rMultiple !== null);
+    const rs = rTrades.map(trade => trade.rMultiple as number);
+    const byR = [...rTrades].sort((a, b) => (a.rMultiple ?? 0) - (b.rMultiple ?? 0));
     return {
       totalTrades: trades.length,
       wins,
@@ -617,329 +1134,8 @@ export const journalSessionService = {
       netPnl: pnls.reduce((sum, value) => sum + value, 0),
       totalR: rs.reduce((sum, value) => sum + value, 0),
       averageR: rs.length ? rs.reduce((sum, value) => sum + value, 0) / rs.length : null,
-      bestTradeId: ranked[ranked.length - 1]?.id ?? null,
-      worstTradeId: ranked[0]?.id ?? null,
-    };
-  },
-
-  // ───────────── رویدادهای تحلیل (چندین تحلیل در یک سشن) ─────────────
-
-  async getSessionAnalyses(sessionId: string): Promise<JournalSessionAnalysis[]> {
-    return db.journalSessionAnalyses.where('sessionId').equals(sessionId).sortBy('createdAt');
-  },
-
-  async createAnalysisEvent(input: AnalysisEventInput): Promise<JournalSessionAnalysis> {
-    const [session, timeframe] = await Promise.all([
-      db.journalSessions.get(input.sessionId),
-      db.journalOptions.get(input.timeframeOptionId),
-    ]);
-    if (!session) throw new Error('سشن پیدا نشد.');
-    if (!timeframe || timeframe.category !== 'timeframe') throw new Error('تایم‌فریم معتبر انتخاب نشده است.');
-
-    // معاملهٔ قبلی همین سشن (جدیدترین) به‌صورت پیش‌فرض و اختیاری لینک می‌شود
-    let previousTradeId = input.previousTradeId;
-    if (previousTradeId === undefined) {
-      const trades = await db.trades.where('journalSessionId').equals(input.sessionId).toArray();
-      previousTradeId = trades.sort((a, b) => b.openedAt - a.openedAt)[0]?.id ?? null;
-    }
-
-    const now = Date.now();
-    const record: JournalSessionAnalysis = {
-      id: uid(),
-      sessionId: input.sessionId,
-      timeframeOptionId: input.timeframeOptionId,
-      directionOptionId: input.directionOptionId ?? null,
-      marketStructureOptionId: input.marketStructureOptionId ?? null,
-      liquidityContextOptionIds: JSON.stringify(input.liquidityContextOptionIds ?? []),
-      expectedDirectionOptionId: input.expectedDirectionOptionId ?? null,
-      zones: input.zones ?? '',
-      notes: input.notes ?? '',
-      tags: JSON.stringify(input.tags ?? []),
-      analysisText: input.analysisText ?? '',
-      scenario: input.scenario ?? '',
-      triggerContext: input.triggerContext ?? '',
-      marketContext: input.marketContext ?? '',
-      previousTradeId: previousTradeId ?? null,
-      nextTradeId: null,
-      createdAt: now,
-      updatedAt: now,
-    };
-    await db.journalSessionAnalyses.add(record);
-    return record;
-  },
-
-  /** چند تحلیل (هر تایم‌فریم یک رویداد جدا) در یک تراکنش؛ رکوردهای قبلی هرگز بازنویسی نمی‌شوند. */
-  async createAnalysisEvents(inputs: AnalysisEventInput[]): Promise<JournalSessionAnalysis[]> {
-    const created: JournalSessionAnalysis[] = [];
-    await db.transaction('rw', db.journalSessionAnalyses, db.journalSessions, db.journalOptions, db.trades, async () => {
-      // کمی فاصلهٔ زمانی تا ترتیب تایم‌لاین همان ترتیب انتخاب کاربر بماند
-      for (const [index, input] of inputs.entries()) {
-        const record = await this.createAnalysisEvent(input);
-        if (index > 0) {
-          record.createdAt += index;
-          record.updatedAt += index;
-          await db.journalSessionAnalyses.put(record);
-        }
-        created.push(record);
-      }
-    });
-    return created;
-  },
-
-  async updateAnalysisEvent(
-    id: string,
-    patch: Partial<Omit<AnalysisEventInput, 'sessionId'>>,
-  ): Promise<JournalSessionAnalysis> {
-    const current = await db.journalSessionAnalyses.get(id);
-    if (!current) throw new Error('تحلیل پیدا نشد.');
-    if (patch.timeframeOptionId && patch.timeframeOptionId !== current.timeframeOptionId) {
-      const timeframe = await db.journalOptions.get(patch.timeframeOptionId);
-      if (!timeframe || timeframe.category !== 'timeframe') throw new Error('تایم‌فریم معتبر انتخاب نشده است.');
-    }
-    const next: JournalSessionAnalysis = {
-      ...current,
-      timeframeOptionId: patch.timeframeOptionId ?? current.timeframeOptionId,
-      directionOptionId: patch.directionOptionId !== undefined ? patch.directionOptionId : current.directionOptionId,
-      marketStructureOptionId: patch.marketStructureOptionId !== undefined ? patch.marketStructureOptionId : current.marketStructureOptionId,
-      expectedDirectionOptionId: patch.expectedDirectionOptionId !== undefined ? patch.expectedDirectionOptionId : current.expectedDirectionOptionId,
-      liquidityContextOptionIds: patch.liquidityContextOptionIds ? JSON.stringify(patch.liquidityContextOptionIds) : current.liquidityContextOptionIds,
-      zones: patch.zones ?? current.zones,
-      notes: patch.notes ?? current.notes,
-      tags: patch.tags ? JSON.stringify(patch.tags) : current.tags,
-      analysisText: patch.analysisText ?? current.analysisText ?? '',
-      scenario: patch.scenario ?? current.scenario ?? '',
-      triggerContext: patch.triggerContext ?? current.triggerContext ?? '',
-      marketContext: patch.marketContext ?? current.marketContext ?? '',
-      previousTradeId: patch.previousTradeId !== undefined ? patch.previousTradeId : current.previousTradeId ?? null,
-      updatedAt: Date.now(),
-    };
-    await db.journalSessionAnalyses.put(next);
-    return next;
-  },
-
-  /** حذف یک تحلیل: رسانه‌های خودش حذف و ارجاع تریگر/معامله به آن پاک می‌شود (خود معامله‌ها دست‌نخورده می‌مانند). */
-  async deleteAnalysisEvent(id: string): Promise<void> {
-    await db.transaction('rw', [db.journalSessionAnalyses, db.journalMedia, db.journalTriggers, db.trades], async () => {
-      await db.journalMedia.where('analysisId').equals(id).delete();
-      const triggers = await db.journalTriggers.where('analysisEventId').equals(id).toArray();
-      for (const trigger of triggers) await db.journalTriggers.update(trigger.id, { analysisEventId: null, updatedAt: Date.now() });
-      const trades = await db.trades.filter(trade => trade.analysisEventId === id).toArray();
-      for (const trade of trades) await db.trades.update(trade.id, { analysisEventId: null });
-      await db.journalSessionAnalyses.delete(id);
-    });
-  },
-
-  // ───────────── رویدادهای تریگر ─────────────
-
-  async getSessionTriggers(sessionId: string): Promise<JournalTriggerEvent[]> {
-    return db.journalTriggers.where('sessionId').equals(sessionId).sortBy('createdAt');
-  },
-
-  async getTriggerForTrade(tradeId: string): Promise<JournalTriggerEvent | undefined> {
-    return db.journalTriggers.where('tradeId').equals(tradeId).first();
-  },
-
-  async createTriggerEvent(input: TriggerEventInput): Promise<JournalTriggerEvent> {
-    const session = await db.journalSessions.get(input.sessionId);
-    if (!session) throw new Error('سشن پیدا نشد.');
-    const now = Date.now();
-    const record: JournalTriggerEvent = {
-      id: uid(),
-      sessionId: input.sessionId,
-      timeframeOptionId: input.timeframeOptionId ?? null,
-      analysisEventId: input.analysisEventId ?? null,
-      tradeId: input.tradeId ?? null,
-      triggerTypeOptionId: input.triggerTypeOptionId ?? null,
-      triggerDescription: input.triggerDescription ?? '',
-      marketMovement: input.marketMovement ?? '',
-      entryReason: input.entryReason ?? '',
-      confirmation: input.confirmation ?? '',
-      direction: input.direction ?? null,
-      status: input.status ?? (input.tradeId ? 'traded' : 'pending'),
-      notes: input.notes ?? '',
-      tags: JSON.stringify(input.tags ?? []),
-      triggeredAt: input.triggeredAt ?? now,
-      createdAt: now,
-      updatedAt: now,
-    };
-    await db.transaction('rw', db.journalTriggers, db.trades, async () => {
-      await db.journalTriggers.add(record);
-      if (record.tradeId) await db.trades.update(record.tradeId, { triggerEventId: record.id });
-    });
-    return record;
-  },
-
-  async updateTriggerEvent(
-    id: string,
-    patch: Partial<Omit<TriggerEventInput, 'sessionId'>>,
-  ): Promise<JournalTriggerEvent> {
-    const current = await db.journalTriggers.get(id);
-    if (!current) throw new Error('تریگر پیدا نشد.');
-    const next: JournalTriggerEvent = {
-      ...current,
-      timeframeOptionId: patch.timeframeOptionId !== undefined ? patch.timeframeOptionId : current.timeframeOptionId,
-      analysisEventId: patch.analysisEventId !== undefined ? patch.analysisEventId : current.analysisEventId,
-      tradeId: patch.tradeId !== undefined ? patch.tradeId : current.tradeId,
-      triggerTypeOptionId: patch.triggerTypeOptionId !== undefined ? patch.triggerTypeOptionId : current.triggerTypeOptionId,
-      triggerDescription: patch.triggerDescription ?? current.triggerDescription,
-      marketMovement: patch.marketMovement ?? current.marketMovement,
-      entryReason: patch.entryReason ?? current.entryReason,
-      confirmation: patch.confirmation ?? current.confirmation,
-      direction: patch.direction !== undefined ? patch.direction : current.direction,
-      status: patch.status ?? current.status,
-      notes: patch.notes ?? current.notes,
-      tags: patch.tags ? JSON.stringify(patch.tags) : current.tags,
-      triggeredAt: patch.triggeredAt ?? current.triggeredAt,
-      updatedAt: Date.now(),
-    };
-    await db.transaction('rw', db.journalTriggers, db.trades, async () => {
-      await db.journalTriggers.put(next);
-      if (next.tradeId && next.tradeId !== current.tradeId) await db.trades.update(next.tradeId, { triggerEventId: next.id });
-    });
-    return next;
-  },
-
-  /** حذف تریگر: رسانه‌های تریگر حذف می‌شوند و معامله (اگر بود) فقط ارجاعش را از دست می‌دهد. */
-  async deleteTriggerEvent(id: string): Promise<void> {
-    await db.transaction('rw', [db.journalTriggers, db.journalMedia, db.trades], async () => {
-      await db.journalMedia.where('triggerId').equals(id).delete();
-      const trades = await db.trades.filter(trade => trade.triggerEventId === id).toArray();
-      for (const trade of trades) await db.trades.update(trade.id, { triggerEventId: null });
-      await db.journalTriggers.delete(id);
-    });
-  },
-
-  // ───────────── معامله از دل سشن ─────────────
-
-  /**
-   * ساخت معامله‌ی جدید (پیش‌نویس باز) که از قبل به سشن، آخرین تحلیل و (اختیاری) تریگر وصل است.
-   * داده‌های سشن (حساب، باکس، استراتژی، نماد) دوباره در معامله پرسیده نمی‌شوند؛ فقط ارتباط ساخته می‌شود.
-   */
-  async createTradeFromSession(input: {
-    sessionId: string;
-    analysisEventId?: string | null;
-    triggerEventId?: string | null;
-    trade?: Partial<Trade>;
-  }): Promise<Trade> {
-    const session = await db.journalSessions.get(input.sessionId);
-    if (!session) throw new Error('سشن پیدا نشد.');
-
-    // اگر معامله از یک Trigger مشخص شروع شده باشد، Analysis همان Trigger
-    // منبع اصلی رابطه است. این کار جلوی اتصال اشتباه Trade به «آخرین Analysis» را می‌گیرد.
-    const trigger = input.triggerEventId
-      ? await db.journalTriggers.get(input.triggerEventId)
-      : undefined;
-    if (input.triggerEventId && (!trigger || trigger.sessionId !== input.sessionId)) {
-      throw new Error('تریگر انتخاب‌شده متعلق به این سشن نیست یا پیدا نشد.');
-    }
-    if (trigger && (trigger.status !== 'pending' && trigger.status !== 'confirmed' || trigger.tradeId)) {
-      throw new Error('فقط تریگر در انتظار یا تأییدشده و بدون معامله قابل تبدیل است.');
-    }
-
-    let analysisEventId = input.analysisEventId;
-    if (analysisEventId === undefined) {
-      analysisEventId = trigger?.analysisEventId ?? undefined;
-      if (analysisEventId === undefined) {
-        const analyses = await db.journalSessionAnalyses.where('sessionId').equals(input.sessionId).sortBy('createdAt');
-        analysisEventId = analyses[analyses.length - 1]?.id ?? null;
-      }
-    }
-
-    if (analysisEventId) {
-      const analysis = await db.journalSessionAnalyses.get(analysisEventId);
-      if (!analysis || analysis.sessionId !== input.sessionId) {
-        throw new Error('تحلیل انتخاب‌شده متعلق به این سشن نیست یا پیدا نشد.');
-      }
-    }
-
-    const trade = await tradeService.createTrade({
-      ...input.trade,
-      journalSessionId: input.sessionId,
-      analysisEventId: analysisEventId ?? null,
-      triggerEventId: input.triggerEventId ?? null,
-    });
-
-    await db.transaction('rw', db.journalSessionAnalyses, db.journalTriggers, async () => {
-      if (analysisEventId) {
-        const analysis = await db.journalSessionAnalyses.get(analysisEventId);
-        // هر Analysis می‌تواند چند Trade داشته باشد؛ فقط اولین Trade را به عنوان nextTrade نگه می‌داریم.
-        if (analysis && !analysis.nextTradeId) {
-          await db.journalSessionAnalyses.update(analysisEventId, { nextTradeId: trade.id });
-        }
-      }
-      if (input.triggerEventId) {
-        await db.journalTriggers.update(input.triggerEventId, {
-          tradeId: trade.id,
-          status: 'traded',
-          updatedAt: Date.now(),
-        });
-      }
-    });
-    return trade;
-  },
-
-  async getSessionTrades(sessionId: string): Promise<Trade[]> {
-    const trades = await db.trades.where('journalSessionId').equals(sessionId).toArray();
-    return trades.sort((a, b) => a.openedAt - b.openedAt);
-  },
-
-  /** رسانه‌های خودِ معامله (نه تریگر/مرور/تحلیل) */
-  async getTradeMedia(tradeId: string): Promise<JournalMedia[]> {
-    const rows = await db.journalMedia.where('tradeId').equals(tradeId).sortBy('createdAt');
-    return rows.filter(m => !m.triggerId && !m.reviewId && !m.analysisId);
-  },
-
-  async getSessionMedia(sessionId: string): Promise<JournalMedia[]> {
-    return db.journalMedia.where('sessionId').equals(sessionId).sortBy('createdAt');
-  },
-
-  async getSessionTimeline(sessionId: string): Promise<SessionTimelineItem[]> {
-    const bundle = await this.getBundle(sessionId);
-    if (!bundle) return [];
-    return buildSessionTimeline(bundle);
-  },
-
-  /** زمینهٔ فقط‌خواندنی یک معامله: سشن، تحلیل و تریگر متصل (بدون کپی داده در خود معامله) */
-  async getTradeContext(tradeId: string): Promise<{
-    trade: Trade;
-    session?: JournalSession;
-    account?: Account;
-    strategy?: Strategy;
-    strategyVersion?: StrategyVersion;
-    analysis?: JournalSessionAnalysis;
-    trigger?: JournalTriggerEvent;
-    options: JournalOption[];
-  } | undefined> {
-    const trade = await db.trades.get(tradeId);
-    if (!trade) return undefined;
-    const session = trade.journalSessionId ? await db.journalSessions.get(trade.journalSessionId) : undefined;
-    const [account, strategy, strategyVersion, analysis, trigger, options] = await Promise.all([
-      session ? db.accounts.get(session.accountId) : Promise.resolve(undefined),
-      session ? db.strategies.get(session.strategyId) : Promise.resolve(undefined),
-      session ? db.strategyVersions.get(session.strategyVersionId) : Promise.resolve(undefined),
-      trade.analysisEventId ? db.journalSessionAnalyses.get(trade.analysisEventId) : Promise.resolve(undefined),
-      trade.triggerEventId ? db.journalTriggers.get(trade.triggerEventId) : db.journalTriggers.where('tradeId').equals(tradeId).first(),
-      this.getOptions(undefined, true),
-    ]);
-    return { trade, session, account, strategy, strategyVersion, analysis, trigger, options };
-  },
-
-  /** خلاصهٔ مرور سشن — همهٔ اعداد از موتور محاسبات (calculateMetrics → core/metrics) می‌آیند، نه از متن آزاد. */
-  async getSessionSummary(sessionId: string): Promise<SessionSummary> {
-    const [trades, analyses, triggers, events] = await Promise.all([
-      this.getSessionTrades(sessionId),
-      this.getSessionAnalyses(sessionId),
-      this.getSessionTriggers(sessionId),
-      db.journalSessionEvents.where('sessionId').equals(sessionId).toArray(),
-    ]);
-    return {
-      ...this.calculateMetrics(trades),
-      analysisCount: analyses.length,
-      triggerCount: triggers.length,
-      triggersTraded: triggers.filter(t => t.status === 'traded' || Boolean(t.tradeId)).length,
-      triggersSkipped: triggers.filter(t => t.status === 'skipped').length,
-      triggersInvalid: triggers.filter(t => t.status === 'invalid').length,
-      noTradeEvents: events.length,
+      bestTradeId: byR[byR.length - 1]?.id ?? null,
+      worstTradeId: byR[0]?.id ?? null,
     };
   },
 

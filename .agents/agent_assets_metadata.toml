@@ -1,0 +1,30 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "_mLCriZlkic5z7dAPdSAZ"
+uri = "file://artifacts/tradermind/docs/TraderMind-Guide.docx"
+type = "word_document"
+title = "راهنمای TraderMind — Word"
+description = "نسخهٔ قابل‌ویرایش فارسی و راست‌به‌چپ؛ ۳۴ فصل به‌همراه ضمیمهٔ محاسبات MFE/MAE."
+logical_id = "4c55aac1-5d74-4a22-8170-964eca1f3404"
+content_hash = "sha256:6b6ab6efd1715f041beb4f68184b8fb573346681c81b70453ae6c7d50f4bb74e"
+size = 48399
+mtime_ms = 1793110968031
+storage_uri = "gcs://replit-rams-assets-riker/rams/assets/repl:a187c5c5-193c-49b7-873b-2991812d09c1/4c55aac1-5d74-4a22-8170-964eca1f3404/6fb996c6-7cc3-47e0-9bbd-a32f009529c8"
+storage_version_token = "1793111000285700"
+content_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+[[outputs]]
+id = "2c4STX6MTSYZw8D8JotTQ"
+uri = "file://artifacts/tradermind/docs/TraderMind-Guide.pdf"
+type = "pdf"
+title = "راهنمای TraderMind — PDF"
+description = "نسخهٔ فارسی A4 با ۴۴ صفحه، فهرست مطالب، مثال‌ها و ضمیمهٔ MFE/MAE."
+logical_id = "64fc770c-f165-429b-a2ee-0687c62837f3"
+content_hash = "sha256:7f3ac30dab6d5f2426e3fba0d520f95353b98708de8ed403ec9df8939637c6d9"
+size = 4841006
+mtime_ms = 1793110967871
+storage_uri = "gcs://replit-rams-assets-riker/rams/assets/repl:a187c5c5-193c-49b7-873b-2991812d09c1/64fc770c-f165-429b-a2ee-0687c62837f3/08b15d5a-7d47-46b9-91e7-9843dde24abe"
+storage_version_token = "1793111001015672"
+content_type = "application/pdf"

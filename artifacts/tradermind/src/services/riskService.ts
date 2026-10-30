@@ -406,8 +406,8 @@ export interface DrawdownPoint {
 }
 
 export interface DrawdownAnalysis {
-  currentDrawdownPct: number;
-  maxDrawdownPct: number;
+  currentDrawdownPct: number | null;
+  maxDrawdownPct: number | null;
   maxDrawdownDate: string | null;
   recoveryDate: string | null;
   recoveryDays: number | null;
@@ -419,22 +419,26 @@ export interface DrawdownAnalysis {
   smallSample: boolean;
 }
 
-export function getDrawdownAnalysis(trades: Trade[], startEquity: number): DrawdownAnalysis {
+export function getDrawdownAnalysis(trades: Trade[], startEquity: number | null): DrawdownAnalysis {
   const sorted = [...trades]
     .filter(t => isClosed(t) && t.closedAt !== null)
     .sort((a, b) => a.closedAt! - b.closedAt!);
 
   if (!sorted.length) {
+    const hasStartingCapital = startEquity !== null && Number.isFinite(startEquity) && startEquity > 0;
     return {
-      currentDrawdownPct: 0, maxDrawdownPct: 0, maxDrawdownDate: null,
+      currentDrawdownPct: hasStartingCapital ? 0 : null,
+      maxDrawdownPct: hasStartingCapital ? 0 : null,
+      maxDrawdownDate: null,
       recoveryDate: null, recoveryDays: null, currentConsecutiveLosses: 0,
       isInDrawdown: false, tradesInMaxDD: 0, avgRiskDuringMaxDD: null,
       curve: [], smallSample: true,
     };
   }
 
-  let equity = startEquity;
-  let peak = startEquity;
+  const hasStartingCapital = startEquity !== null && Number.isFinite(startEquity) && startEquity > 0;
+  let equity = hasStartingCapital ? startEquity : 0;
+  let peak = equity;
   let maxDD = 0;
   let maxDDDate: string | null = null;
   let ddStart: string | null = null;
@@ -449,17 +453,17 @@ export function getDrawdownAnalysis(trades: Trade[], startEquity: number): Drawd
       peak = equity;
       ddStart = null;
     }
-    const dd = peak > 0 ? ((peak - equity) / peak) * 100 : 0;
-    if (dd > 0 && ddStart === null) ddStart = dateStr(t.closedAt!);
-    if (dd > maxDD) {
+    const dd = hasStartingCapital && peak > 0 ? ((peak - equity) / peak) * 100 : null;
+    if (dd !== null && dd > 0 && ddStart === null) ddStart = dateStr(t.closedAt!);
+    if (dd !== null && dd > maxDD) {
       maxDD = dd;
       maxDDDate = dateStr(t.closedAt!);
       maxDDStart = ddStart;
     }
-    curve.push({ date: dateStr(t.closedAt!), equity, drawdownPct: dd });
+    curve.push({ date: dateStr(t.closedAt!), equity, drawdownPct: dd ?? 0 });
   });
 
-  const currentDD = peak > 0 ? ((peak - equity) / peak) * 100 : 0;
+  const currentDD = hasStartingCapital && peak > 0 ? ((peak - equity) / peak) * 100 : null;
 
   // Current consecutive losses
   let consLoss = 0;
@@ -484,12 +488,12 @@ export function getDrawdownAnalysis(trades: Trade[], startEquity: number): Drawd
 
   return {
     currentDrawdownPct: currentDD,
-    maxDrawdownPct: maxDD,
+    maxDrawdownPct: hasStartingCapital ? maxDD : null,
     maxDrawdownDate: maxDDDate,
     recoveryDate: recoveryDate,
     recoveryDays: recovDays,
     currentConsecutiveLosses: consLoss,
-    isInDrawdown: currentDD > 0,
+    isInDrawdown: currentDD !== null && currentDD > 0,
     tradesInMaxDD: tradesInDD.length,
     avgRiskDuringMaxDD: avg(tradesInDD.filter(t => t.riskPercentage !== null).map(t => t.riskPercentage!)),
     curve,
@@ -829,13 +833,17 @@ export function getRiskQualityScore(trades: Trade[], profile: RiskProfileData | 
   });
 
   // C5: Drawdown behavior (15%)
-  const startEq = profile?.accountEquity ?? profile?.accountBalance ?? 10000;
+  const startEq = profile?.accountEquity ?? profile?.accountBalance ?? null;
   const dda = getDrawdownAnalysis(closed, startEq);
   const maxDDLimit = profile?.maxDrawdownPct ?? 20;
-  const ddScore = Math.max(0, 100 - (dda.maxDrawdownPct / maxDDLimit) * 100);
+  const ddScore = dda.maxDrawdownPct === null
+    ? 50
+    : Math.max(0, 100 - (dda.maxDrawdownPct / maxDDLimit) * 100);
   components.push({
     label: 'کنترل افت سرمایه', score: ddScore, weight: 0.15,
-    description: `بیشترین افت: ${dda.maxDrawdownPct.toFixed(1)}% (محدوده مجاز: ${maxDDLimit}%)`,
+    description: dda.maxDrawdownPct === null
+      ? 'برای سنجش افت درصدی، موجودی اولیهٔ حساب لازم است'
+      : `بیشترین افت: ${dda.maxDrawdownPct.toFixed(1)}% (محدوده مجاز: ${maxDDLimit}%)`,
     sampleSize: n,
   });
 
@@ -1137,7 +1145,7 @@ export interface PreTradeBriefing {
   weeklyRiskLimit: number | null;
   currentConsecutiveLosses: number;
   maxConsecutiveLossLimit: number | null;
-  currentDrawdownPct: number;
+  currentDrawdownPct: number | null;
   maxDrawdownLimit: number | null;
   historicalAvgRiskInSetup: number | null;
   historicalAvgRiskInSession: number | null;
@@ -1167,7 +1175,7 @@ export function getPreTradeBriefing(
     else break;
   }
 
-  const startEq = profile?.accountEquity ?? profile?.accountBalance ?? 10000;
+  const startEq = profile?.accountEquity ?? profile?.accountBalance ?? null;
   const dda = getDrawdownAnalysis(closed, startEq);
 
   // Setup-specific history
@@ -1180,7 +1188,8 @@ export function getPreTradeBriefing(
       warnings.push(`ریسک روزانه به ${todayRisk.toFixed(1)}% رسیده — محدودیت: ${profile.maxDailyRiskPct}%`);
     if (profile.maxConsecutiveLosses !== null && consLoss >= profile.maxConsecutiveLosses)
       warnings.push(`${consLoss} ضرر متوالی — مرور قوانین توصیه می‌شود`);
-    if (profile.maxDrawdownPct !== null && dda.currentDrawdownPct >= profile.maxDrawdownPct * 0.8)
+    if (profile.maxDrawdownPct !== null && dda.currentDrawdownPct !== null
+      && dda.currentDrawdownPct >= profile.maxDrawdownPct * 0.8)
       warnings.push(`افت سرمایه فعلی ${dda.currentDrawdownPct.toFixed(1)}% — محدودیت: ${profile.maxDrawdownPct}%`);
   }
 

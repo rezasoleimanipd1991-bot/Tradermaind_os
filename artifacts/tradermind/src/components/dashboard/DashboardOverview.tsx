@@ -4,7 +4,8 @@ import { Activity, BarChart3, Crown, Hash, Percent, ShieldAlert, Target, Trendin
 import { Panel, KpiCard, DataPlaceholder } from '../ds';
 import { EquityAreaChart, DistributionDonut } from '../charts/TmCharts';
 import { computeOverview, type Ranked } from '../../services/dashboardOverview';
-import type { Trade } from '../../db/database';
+import type { Account, Trade } from '../../db/database';
+import { getWorstAccountDrawdown } from '../../services/accountDrawdownService';
 import { cn } from '../../lib/utils';
 
 export type OverviewRange = 'today' | 'week' | 'month' | 'year' | 'custom';
@@ -20,6 +21,8 @@ export interface OverviewPrev { winRate: number | null; profitFactor: number | n
 
 interface Props {
   trades: Trade[];
+  allTrades: Trade[];
+  accounts: Account[];
   strategyName: (id: string) => string;
   range: OverviewRange;
   onRangeChange: (r: OverviewRange) => void;
@@ -66,8 +69,15 @@ function InsightCard({ icon: Icon, title, item, tone, emptyHint }: {
   );
 }
 
-export function DashboardOverview({ trades, strategyName, range, onRangeChange, prev }: Props) {
+export function DashboardOverview({ trades, allTrades, accounts, strategyName, range, onRangeChange, prev }: Props) {
   const o = useMemo(() => computeOverview(trades, strategyName), [trades, strategyName]);
+  const worstAccountDrawdown = useMemo(
+    () => getWorstAccountDrawdown(allTrades, accounts, trades),
+    [allTrades, accounts, trades],
+  );
+  const hasClosedTradesInAccounts = trades.some(
+    trade => trade.status === 'closed' && trade.accountId !== null,
+  );
   const { kpis, distribution: d } = o;
   const hasEquity = o.equity.length >= 2;
 
@@ -103,11 +113,14 @@ export function DashboardOverview({ trades, strategyName, range, onRangeChange, 
           delta={delta(kpis.profitFactor, prev?.profitFactor, '')}
         />
         <KpiCard
-          label="Max Drawdown" icon={ShieldAlert} tone={kpis.maxDrawdownPct === null ? 'neutral' : 'negative'}
-          value={kpis.maxDrawdownPct !== null
-            ? `−${kpis.maxDrawdownPct.toFixed(0)}%`
-            : kpis.maxDrawdownAbs > 0 ? `−${num.format(kpis.maxDrawdownAbs)}` : null}
-          hint={kpis.maxDrawdownPct !== null && kpis.maxDrawdownAbs > 0 ? num.format(kpis.maxDrawdownAbs) : undefined}
+          label="Max Drawdown" icon={ShieldAlert}
+          tone={worstAccountDrawdown && worstAccountDrawdown.maxDrawdownPct! > 0 ? 'negative' : 'neutral'}
+          value={worstAccountDrawdown
+            ? `${worstAccountDrawdown.maxDrawdownPct! > 0 ? '−' : ''}${worstAccountDrawdown.maxDrawdownPct!.toFixed(1)}%`
+            : null}
+          hint={worstAccountDrawdown
+            ? `${worstAccountDrawdown.accountName} · ${worstAccountDrawdown.currency} ${num.format(worstAccountDrawdown.maxDrawdownAbs)}`
+            : hasClosedTradesInAccounts ? 'برای درصد دقیق، موجودی اولیهٔ حساب را ثبت کنید' : undefined}
         />
         <KpiCard
           label="Total Trades" icon={Hash} tone="info"

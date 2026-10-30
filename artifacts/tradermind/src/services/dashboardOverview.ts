@@ -28,9 +28,6 @@ export interface OverviewKpis {
   /** 0..100 */
   winRate: number | null;
   profitFactor: number | null;
-  /** درصد افت از اوج سرمایه (۰ یا مثبت)؛ null اگر اوج مثبتی وجود نداشته باشد */
-  maxDrawdownPct: number | null;
-  maxDrawdownAbs: number;
   /** میانگین R هر معامله (بر پایه‌ی rMultiple ثبت‌شده) */
   expectancyR: number | null;
   totalPnl: number;
@@ -67,9 +64,6 @@ export function computeOverview(trades: Trade[], strategyName: (id: string) => s
   const withPnl = closed.filter((t) => getNetPnl(t) !== null);
 
   let eq = 0;
-  let peak = 0;
-  let maxDDAbs = 0;
-  let ddAtPeak = 0;
   let winSum = 0;
   let lossSum = 0;
   const equity: EquityPoint[] = [];
@@ -78,9 +72,6 @@ export function computeOverview(trades: Trade[], strategyName: (id: string) => s
     eq += pnl;
     if (pnl > 0) winSum += pnl;
     if (pnl < 0) lossSum += -pnl;
-    if (eq > peak) peak = eq;
-    const dd = peak - eq;
-    if (dd > maxDDAbs) { maxDDAbs = dd; ddAtPeak = peak; }
     equity.push({ date: getTradingDateKey(closedTs(t)), equity: +eq.toFixed(2), pnl: +pnl.toFixed(2), symbol: t.symbol });
   }
 
@@ -98,8 +89,6 @@ export function computeOverview(trades: Trade[], strategyName: (id: string) => s
       closedTrades: closed.length,
       winRate: closed.length ? (wins / closed.length) * 100 : null,
       profitFactor: lossSum > 0 ? winSum / lossSum : null,
-      maxDrawdownPct: ddAtPeak > 0 ? (maxDDAbs / ddAtPeak) * 100 : null,
-      maxDrawdownAbs: maxDDAbs,
       expectancyR: rs.length ? rs.reduce((s, v) => s + v, 0) / rs.length : null,
       totalPnl: eq,
     },

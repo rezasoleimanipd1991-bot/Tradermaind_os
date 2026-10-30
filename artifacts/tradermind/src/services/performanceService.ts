@@ -99,13 +99,6 @@ export function getPerformanceProfile(trades: Trade[]): PerformanceProfile {
   const cv = risks.length >= 2 ? (stdDev(risks)! / (avg(risks) || 1)) : null;
   const holdings = closed.filter(t => t.closedAt !== null).map(t => (t.closedAt! - t.openedAt) / 60000);
   const withReview = trades.filter(t => { try { const r = JSON.parse(t.postTradeReview) as PostTradeReviewData; return r.completedAt > 0; } catch { return false; } });
-  let maxDD = 0, peak = 0, equity = 0;
-  [...closed].sort((a, b) => a.openedAt - b.openedAt).forEach(t => {
-    equity += (t.rMultiple ?? 0);
-    if (equity > peak) peak = equity;
-    const dd = peak > 0 ? (peak - equity) / peak : 0;
-    if (dd > maxDD) maxDD = dd;
-  });
   // trades per week
   let freq: number | null = null;
   if (closed.length >= 2) {
@@ -114,7 +107,9 @@ export function getPerformanceProfile(trades: Trade[]): PerformanceProfile {
   }
   return {
     ...base, avgRisk: avg(risks), riskConsistency: cv,
-    maxDrawdownPct: maxDD > 0 ? maxDD * 100 : null,
+    // Percent drawdown needs an account starting balance; callers with account
+    // context fill this from accountDrawdownService instead of treating R as equity.
+    maxDrawdownPct: null,
     tradeFrequency: freq, dateRange: dateRange(trades),
     holdingTimeAvgMin: avg(holdings),
     completedReviews: withReview.length,

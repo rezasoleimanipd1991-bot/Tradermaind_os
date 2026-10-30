@@ -15,7 +15,7 @@ import { Button } from '../components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { toast } from 'sonner';
 import { db } from '../db/database';
-import type { Trade, RiskGroup } from '../db/database';
+import type { Account, Trade, RiskGroup } from '../db/database';
 import {
   getRiskConsistency,
   getAllDailyExposures,
@@ -37,6 +37,8 @@ import {
 } from '../services/riskService';
 import type { RiskProfileData, RiskInsight } from '../services/riskService';
 import { VoiceTypingButton } from '../components/ui/VoiceTypingButton';
+import { computeAccountDrawdowns, getWorstAccountDrawdown } from '../services/accountDrawdownService';
+import { getNetPnl } from '../lib/tradeHelpers';
 
 // ─────────────────────────────────────────────────────────────────
 // Types
@@ -131,12 +133,14 @@ function ScoreBadge({ score, grade }: { score: number; grade: string }) {
 export default function RiskManagement() {
   const [tab, setTab] = useState<TabId>('overview');
   const [trades, setTrades] = useState<Trade[]>([]);
+  const [accounts, setAccounts] = useState<Account[]>([]);
   const [profile, setProfile] = useState<RiskProfileData | null>(null);
   const [violations, setViolations] = useState<RiskViolation[]>([]);
   const [groups, setGroups] = useState<RiskGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
   const [timeRange, setTimeRange] = useState<'all' | '3m' | '6m' | '1y'>('all');
+  const [drawdownAccountId, setDrawdownAccountId] = useState('all');
   const [expandedInsight, setExpandedInsight] = useState<string | null>(null);
   const [dismissedInsights, setDismissedInsights] = useState<Set<string>>(
     () => new Set(JSON.parse(localStorage.getItem('rm_dismissed_insights') ?? '[]'))
@@ -154,8 +158,11 @@ export default function RiskManagement() {
       db.riskProfiles.get('default').catch(() => null),
       db.riskViolations.orderBy('createdAt').reverse().toArray().catch(() => []),
       db.riskGroups.orderBy('createdAt').toArray().catch(() => []),
-    ]).then(([t, p, v, g]) => {
+      db.accounts.toArray(),
+    ]).then(([t, p, v, g, accountRows]) => {
       setTrades(t);
+      setAccounts(accountRows);
+      setDrawdownAccountId(accountRows.find(account => account.isDefault && !account.isArchived)?.id ?? 'all');
       setProfile(p ?? null);
       setViolations(v ?? []);
       setGroups(g ?? []);
@@ -172,6 +179,37 @@ export default function RiskManagement() {
   }, [trades, timeRange]);
 
   const closed = useMemo(() => filteredTrades.filter(t => t.status === 'closed'), [filteredTrades]);
+  const accountDrawdowns = useMemo(
+    () => computeAccountDrawdowns(trades, accounts, closed),
+    [trades, accounts, closed],
+  );
+  const drawdownAccountSummary = useMemo(() => {
+    if (drawdownAccountId !== 'all') {
+      return accountDrawdowns.find(item => item.accountId === drawdownAccountId) ?? null;
+    }
+    return getWorstAccountDrawdown(trades, accounts, closed) ?? accountDrawdowns[0] ?? null;
+  }, [drawdownAccountId, accountDrawdowns, trades, accounts, closed]);
+  const drawdownAccount = useMemo(
+    () => accounts.find(account => account.id === drawdownAccountId)
+      ?? accounts.find(account => account.id === drawdownAccountSummary?.accountId)
+      ?? null,
+    [accounts, drawdownAccountId, drawdownAccountSummary],
+  );
+  const drawdownTrades = useMemo(
+    () => drawdownAccount ? closed.filter(trade => trade.accountId === drawdownAccount.id) : [],
+    [closed, drawdownAccount],
+  );
+  const drawdownStartingEquity = useMemo(() => {
+    if (!drawdownAccount || drawdownAccount.initialBalance === null || drawdownAccount.initialBalance <= 0) return null;
+    if (drawdownTrades.length === 0) return drawdownAccount.initialBalance;
+    const firstTradeOpenedAt = Math.min(...drawdownTrades.map(trade => trade.openedAt));
+    const priorPnl = trades
+      .filter(trade => trade.accountId === drawdownAccount.id
+        && trade.status === 'closed'
+        && (trade.closedAt ?? trade.openedAt) < firstTradeOpenedAt)
+      .reduce((sum, trade) => sum + (getNetPnl(trade) ?? 0), 0);
+    return drawdownAccount.initialBalance + priorPnl;
+  }, [drawdownAccount, drawdownTrades, trades]);
 
   // Memoized analytics
   const consistency = useMemo(() => getRiskConsistency(filteredTrades), [filteredTrades]);
@@ -182,7 +220,10 @@ export default function RiskManagement() {
   const postWin = useMemo(() => getPostWinBehavior(filteredTrades), [filteredTrades]);
   const byDay = useMemo(() => getRiskByDayOfWeek(filteredTrades, profile), [filteredTrades, profile]);
   const bySession = useMemo(() => getRiskBySession(filteredTrades, profile), [filteredTrades, profile]);
-  const drawdown = useMemo(() => getDrawdownAnalysis(closed, profile?.accountEquity ?? profile?.accountBalance ?? 10000), [closed, profile]);
+  const drawdown = useMemo(
+    () => getDrawdownAnalysis(drawdownTrades, drawdownStartingEquity),
+    [drawdownTrades, drawdownStartingEquity],
+  );
   const rrAnalysis = useMemo(() => getRRAnalysis(filteredTrades), [filteredTrades]);
   const slBehavior = useMemo(() => getSLBehavior(filteredTrades), [filteredTrades]);
   const tpBehavior = useMemo(() => getTPBehavior(filteredTrades), [filteredTrades]);
@@ -324,15 +365,28 @@ export default function RiskManagement() {
               <p className="text-xs text-muted-foreground">{filteredTrades.length} معامله تحلیل شد</p>
             </div>
           </div>
-          <Select value={timeRange} onValueChange={v => setTimeRange(v as typeof timeRange)}>
-            <SelectTrigger className="h-8 w-28 text-xs"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">همه</SelectItem>
-              <SelectItem value="3m">۳ ماه</SelectItem>
-              <SelectItem value="6m">۶ ماه</SelectItem>
-              <SelectItem value="1y">۱ سال</SelectItem>
-            </SelectContent>
-          </Select>
+          <div className="flex gap-2">
+            <Select value={timeRange} onValueChange={v => setTimeRange(v as typeof timeRange)}>
+              <SelectTrigger className="h-8 w-28 text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">همه</SelectItem>
+                <SelectItem value="3m">۳ ماه</SelectItem>
+                <SelectItem value="6m">۶ ماه</SelectItem>
+                <SelectItem value="1y">۱ سال</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select value={drawdownAccountId} onValueChange={setDrawdownAccountId}>
+              <SelectTrigger className="h-8 w-40 text-xs" aria-label="حساب مبنای افت سرمایه">
+                <SelectValue placeholder="حساب افت سرمایه" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">بدترین حساب</SelectItem>
+                {accounts.filter(account => !account.isArchived).map(account => (
+                  <SelectItem key={account.id} value={account.id}>{account.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
         {/* Tabs */}
         <div className="max-w-5xl mx-auto mt-2 flex gap-1 overflow-x-auto scrollbar-hide">
@@ -434,16 +488,23 @@ export default function RiskManagement() {
             {/* Drawdown summary */}
             <Card className={drawdown.isInDrawdown ? 'border-destructive/30' : ''}>
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm flex items-center gap-2">
-                  <TrendingDown className="w-4 h-4" />
-                  تحلیل افت سرمایه
-                </CardTitle>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <CardTitle className="text-sm flex items-center gap-2">
+                    <TrendingDown className="w-4 h-4" />
+                    تحلیل افت سرمایه
+                  </CardTitle>
+                  {drawdownAccount && (
+                    <p className="text-xs text-muted-foreground">
+                      {drawdownAccount.name} · {drawdownAccount.currency}
+                    </p>
+                  )}
+                </div>
               </CardHeader>
               <CardContent>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                   {[
-                    { label: 'افت فعلی', value: pct(drawdown.currentDrawdownPct), bad: drawdown.currentDrawdownPct > 5 },
-                    { label: 'بیشترین افت', value: pct(drawdown.maxDrawdownPct), bad: drawdown.maxDrawdownPct > 10 },
+                    { label: 'افت فعلی', value: pct(drawdown.currentDrawdownPct), bad: drawdown.currentDrawdownPct !== null && drawdown.currentDrawdownPct > 5 },
+                    { label: 'بیشترین افت', value: pct(drawdown.maxDrawdownPct), bad: drawdown.maxDrawdownPct !== null && drawdown.maxDrawdownPct > 10 },
                     { label: 'ضررهای متوالی', value: String(drawdown.currentConsecutiveLosses), bad: drawdown.currentConsecutiveLosses >= (profile?.maxConsecutiveLosses ?? 999) },
                     { label: 'معاملات در افت', value: String(drawdown.tradesInMaxDD) },
                   ].map(m => (
@@ -453,6 +514,11 @@ export default function RiskManagement() {
                     </div>
                   ))}
                 </div>
+                {drawdownAccount?.initialBalance == null && (
+                  <p className="mt-3 text-xs text-muted-foreground">
+                    برای نمایش درصد افت، موجودی اولیهٔ این حساب را در مدیریت حساب‌ها ثبت کنید.
+                  </p>
+                )}
                 {drawdown.smallSample && <div className="mt-3"><SmallSampleBadge /></div>}
               </CardContent>
             </Card>
@@ -863,7 +929,7 @@ export default function RiskManagement() {
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                {drawdown.curve.length > 0 ? (
+                {drawdown.curve.length > 0 && drawdown.maxDrawdownPct !== null ? (
                   <div className="space-y-3">
                     <div className="grid grid-cols-2 gap-3 text-xs">
                       <div className="rounded-xl p-3 border border-border bg-muted/10">
@@ -887,6 +953,10 @@ export default function RiskManagement() {
                     <p className="text-xs text-muted-foreground text-center">آخرین ۳۰ معامله — ارتفاع = شدت افت</p>
                     {drawdown.smallSample && <SmallSampleBadge />}
                   </div>
+                ) : drawdownAccount?.initialBalance == null ? (
+                  <p className="text-sm text-muted-foreground text-center py-4">
+                    برای محاسبه و رسم درصد افت، موجودی اولیهٔ این حساب را ثبت کنید.
+                  </p>
                 ) : (
                   <p className="text-sm text-muted-foreground text-center py-4">داده کافی برای رسم منحنی وجود ندارد</p>
                 )}

@@ -11,7 +11,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { db } from '@/db/database';
-import type { Trade, Strategy } from '@/db/database';
+import type { Account, Trade, Strategy } from '@/db/database';
 import {
   getByDay, getByHour, getBySession, getBySymbol, getBySetup,
   getPerformanceProfile,
@@ -27,6 +27,7 @@ import {
 import { cn } from '@/lib/utils';
 import { useAppStore } from '@/store/useAppStore';
 import { AdvancedOverview } from '@/components/analytics/AdvancedOverview';
+import { getWorstAccountDrawdown } from '@/services/accountDrawdownService';
 import { Panel } from '@/components/ds';
 
 // ─── Helpers ──────────────────────────────────────────────────────
@@ -150,6 +151,7 @@ export default function AdvancedAnalytics() {
   const [dirF, setDirF]           = useState<'all' | 'long' | 'short'>('all');
   const [resultF, setResultF]     = useState<'all' | 'win' | 'loss' | 'breakeven'>('all');
   const [allTrades, setAllTrades]   = useState<Trade[]>([]);
+  const [accounts, setAccounts] = useState<Account[]>([]);
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [loading, setLoading]   = useState(true);
 
@@ -158,11 +160,12 @@ export default function AdvancedAnalytics() {
     (async () => {
       setLoading(true);
       try {
-        const [trades, strats] = await Promise.all([
+        const [trades, strats, accountRows] = await Promise.all([
           db.trades.toArray(),
           db.strategies.toArray(),
+          db.accounts.toArray(),
         ]);
-        if (!cancelled) { setAllTrades(trades); setStrategies(strats); }
+        if (!cancelled) { setAllTrades(trades); setStrategies(strats); setAccounts(accountRows); }
       } catch {
         // DB read error — show empty state instead of infinite loading
       } finally {
@@ -172,15 +175,20 @@ export default function AdvancedAnalytics() {
     return () => { cancelled = true; };
   }, []);
 
-  // ── Filtered trades ──────────────────────────────────────────
-  const trades = useMemo(() => {
+  // ── Trades inside the time range ──────────────────────────────
+  const rangeTrades = useMemo(() => {
     let base = allTrades;
     if (range !== 'all') {
       const { from, to } = getDateRange(range as Exclude<TimeRangeKey, 'custom'>);
       base = filterTradesByRange(allTrades, from, to);
     }
+    return base;
+  }, [allTrades, range, tradingTimeMode, brokerUtcOffsetMinutes]);
+
+  // ── Filtered trades ──────────────────────────────────────────
+  const trades = useMemo(() => {
     // فیلترهای گزارش: همه‌ی نمودارها و آمار از همین فهرست تغذیه می‌شوند
-    return base.filter(t =>
+    return rangeTrades.filter(t =>
       (symbolF === 'all' || t.symbol === symbolF) &&
       (strategyF === 'all' || (strategyF === 'none' ? !t.strategyId : t.strategyId === strategyF)) &&
       (dirF === 'all' || t.direction === dirF) &&
@@ -189,7 +197,7 @@ export default function AdvancedAnalytics() {
         || (resultF === 'loss' && isLoss(t))
         || (resultF === 'breakeven' && t.result === 'breakeven')),
     );
-  }, [allTrades, range, symbolF, strategyF, dirF, resultF, tradingTimeMode, brokerUtcOffsetMinutes]);
+  }, [rangeTrades, symbolF, strategyF, dirF, resultF]);
 
   const symbolOptions = useMemo(() => [...new Set(allTrades.map(t => t.symbol).filter(Boolean))].sort(), [allTrades]);
   const strategyNameOf = useMemo(() => {
@@ -201,7 +209,14 @@ export default function AdvancedAnalytics() {
   const closedTrades = useMemo(() => trades.filter(isClosed), [trades]);
 
   // ── Core metrics ─────────────────────────────────────────────
-  const profile   = useMemo(() => getPerformanceProfile(trades), [trades]);
+  const worstAccountDrawdown = useMemo(
+    () => getWorstAccountDrawdown(allTrades, accounts, rangeTrades),
+    [allTrades, accounts, rangeTrades],
+  );
+  const profile   = useMemo(() => ({
+    ...getPerformanceProfile(trades),
+    maxDrawdownPct: worstAccountDrawdown?.maxDrawdownPct ?? null,
+  }), [trades, worstAccountDrawdown]);
   const analytics = useMemo(
     () => computeAnalytics(trades, [], strategies),
     [trades, strategies],
@@ -381,8 +396,12 @@ export default function AdvancedAnalytics() {
         />
         <MetricCard
           label="Max Drawdown"
-          value={profile.maxDrawdownPct !== null ? `${profile.maxDrawdownPct.toFixed(1)}٪` : '—'}
-          sub="حداکثر افت سرمایه"
+          value={profile.maxDrawdownPct !== null
+            ? `${profile.maxDrawdownPct > 0 ? '−' : ''}${profile.maxDrawdownPct.toFixed(1)}٪`
+            : '—'}
+          sub={worstAccountDrawdown
+            ? `${worstAccountDrawdown.accountName} · بر پایه موجودی اولیه`
+            : 'برای درصد دقیق، موجودی اولیهٔ حساب را ثبت کنید'}
           color={profile.maxDrawdownPct !== null && profile.maxDrawdownPct > 20 ? 'text-destructive' : ''}
         />
       </div>

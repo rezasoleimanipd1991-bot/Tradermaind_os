@@ -15,7 +15,7 @@ import { Button } from '../components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { toast } from 'sonner';
 import { db } from '../db/database';
-import type { Trade } from '../db/database';
+import type { Account, Trade } from '../db/database';
 import {
   calcBaseMetrics, getPerformanceProfile, getByDay, getByHour, getBySession,
   getBySymbol, getBySetup, getBestCombos, getProcessQuality, detectMistakes,
@@ -31,6 +31,7 @@ import type {
   LessonTrackEntry,
 } from '../services/performanceService';
 import { getPostLossBehavior, getPostWinBehavior } from '../services/riskService';
+import { getWorstAccountDrawdown } from '../services/accountDrawdownService';
 import { useAppStore } from '../store/useAppStore';
 import { VoiceTypingButton } from '../components/ui/VoiceTypingButton';
 
@@ -157,6 +158,7 @@ export default function PerformanceDashboard() {
   const brokerUtcOffsetMinutes = useAppStore(s => s.brokerUtcOffsetMinutes);
   const [tab, setTab] = useState<TabId>('overview');
   const [trades, setTrades] = useState<Trade[]>([]);
+  const [accounts, setAccounts] = useState<Account[]>([]);
   const [loading, setLoading] = useState(true);
   const [timeRange, setTimeRange] = useState<'all' | '3m' | '6m' | '1y'>('all');
   const [evGranularity, setEvGranularity] = useState<'week' | 'month'>('month');
@@ -178,9 +180,11 @@ export default function PerformanceDashboard() {
     Promise.all([
       db.trades.toArray(),
       db.knowledgeNotes.where('isRule').equals(1).toArray().catch(() => []),
-    ]).then(([t, kn]) => {
+      db.accounts.toArray(),
+    ]).then(([t, kn, accountRows]) => {
       setTrades(t);
       setKnowledgeNotes(kn);
+      setAccounts(accountRows);
       setLoading(false);
     });
   }, []);
@@ -192,7 +196,14 @@ export default function PerformanceDashboard() {
     return trades.filter(t => t.openedAt >= now - ms);
   }, [trades, timeRange, tradingTimeMode, brokerUtcOffsetMinutes]);
 
-  const profile = useMemo(() => getPerformanceProfile(filtered), [filtered]);
+  const worstAccountDrawdown = useMemo(
+    () => getWorstAccountDrawdown(trades, accounts, filtered),
+    [trades, accounts, filtered],
+  );
+  const profile = useMemo(() => ({
+    ...getPerformanceProfile(filtered),
+    maxDrawdownPct: worstAccountDrawdown?.maxDrawdownPct ?? null,
+  }), [filtered, worstAccountDrawdown]);
   const scorecard = useMemo(() => getScorecard(filtered), [filtered]);
   const processQ = useMemo(() => getProcessQuality(filtered), [filtered]);
   const byDay = useMemo(() => getByDay(filtered), [filtered, tradingTimeMode, brokerUtcOffsetMinutes]);
@@ -332,7 +343,16 @@ export default function PerformanceDashboard() {
                     <StatRow label="R میانگین برد" value={r(profile.avgWin)} color="text-green-500" />
                     <StatRow label="R میانگین ضرر" value={r(profile.avgLoss)} color="text-destructive" />
                     <StatRow label="ضریب سود" value={profile.profitFactor !== null ? profile.profitFactor.toFixed(2) : '—'} color={profile.profitFactor !== null && profile.profitFactor >= 1.5 ? 'text-green-500' : ''} />
-                    <StatRow label="بیشترین افت" value={profile.maxDrawdownPct !== null ? `-${profile.maxDrawdownPct.toFixed(1)}%` : '—'} color="text-destructive" />
+                    <StatRow
+                      label="بیشترین افت"
+                      value={profile.maxDrawdownPct !== null
+                        ? `${profile.maxDrawdownPct > 0 ? '−' : ''}${profile.maxDrawdownPct.toFixed(1)}%`
+                        : '—'}
+                      sub={worstAccountDrawdown
+                        ? `${worstAccountDrawdown.accountName} · موجودی اولیه`
+                        : 'برای درصد دقیق، موجودی اولیهٔ حساب را ثبت کنید'}
+                      color="text-destructive"
+                    />
                     <StatRow label="تکرار معامله" value={profile.tradeFrequency !== null ? `${profile.tradeFrequency.toFixed(1)}/هفته` : '—'} />
                     <StatRow label="میانگین نگهداری" value={profile.holdingTimeAvgMin !== null ? (profile.holdingTimeAvgMin < 60 ? `${profile.holdingTimeAvgMin.toFixed(0)}دقیقه` : `${(profile.holdingTimeAvgMin/60).toFixed(1)}ساعت`) : '—'} />
                     <StatRow label="نرخ ریویو" value={profile.reviewRate !== null ? `${(profile.reviewRate * 100).toFixed(0)}%` : '—'} />

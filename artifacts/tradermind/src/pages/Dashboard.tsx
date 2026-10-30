@@ -35,6 +35,7 @@ import { useAppStore } from "../store/useAppStore";
 import { getTradingDateKey, getTradingDateRange, getTradingMonthKey } from "../lib/tradingTime";
 import { getNetPnl } from "../lib/tradeHelpers";
 import { DashboardOverview } from "../components/dashboard/DashboardOverview";
+import { computeAccountDrawdowns } from "../services/accountDrawdownService";
 
 // ══════════════════════════════════════════════════════════════════
 // ثوابت و نوع‌ها
@@ -226,6 +227,11 @@ export default function Dashboard() {
       closedCount: closed.length,
     };
   }, [rangedTrades]);
+
+  const accountDrawdowns = useMemo(
+    () => computeAccountDrawdowns(data?.trades ?? [], accounts),
+    [data?.trades, accounts],
+  );
 
   // ── آخرین ۵ معامله
   const recentTrades = useMemo(() => (data?.trades ?? []).slice(0, 5), [data]);
@@ -521,6 +527,8 @@ export default function Dashboard() {
       {/* ━━━━━━━━━━━━━━━━ 1b. نمای کلی (KPI، Equity، توزیع) — فاز ۳ ━━━━━━━━━━━━━━━━ */}
       <DashboardOverview
         trades={rangedTrades}
+        allTrades={data?.trades ?? []}
+        accounts={accounts}
         strategyName={(id) => stratMap.get(id) ?? "استراتژی نامشخص"}
         range={rangeKey}
         onRangeChange={changeRange}
@@ -812,6 +820,7 @@ export default function Dashboard() {
               const wins = closed.filter(t => t.result === 'win' || t.result === 'partial-win');
               const pnl = closed.reduce((s, t) => s + (getNetPnl(t) ?? 0), 0);
               const winRate = closed.length > 0 ? Math.round((wins.length / closed.length) * 100) : null;
+              const drawdown = accountDrawdowns.find(item => item.accountId === acc.id);
               return (
                 <Link key={acc.id} href={`/journal/trades?accountId=${acc.id}`}>
                   <div className="flex items-center gap-3 p-3 rounded-xl border bg-card hover:bg-muted/30 transition-colors cursor-pointer">
@@ -828,6 +837,13 @@ export default function Dashboard() {
                       </p>
                       {winRate !== null && (
                         <p className="text-xs text-muted-foreground">{winRate}٪ برد</p>
+                      )}
+                      {drawdown && (
+                        <p className="text-[11px] text-muted-foreground">
+                          بیشترین افت: {drawdown.maxDrawdownPct !== null
+                            ? `${drawdown.maxDrawdownPct > 0 ? '−' : ''}${drawdown.maxDrawdownPct.toFixed(1)}٪`
+                            : `${drawdown.currency} ${drawdown.maxDrawdownAbs.toFixed(2)}`}
+                        </p>
                       )}
                     </div>
                   </div>

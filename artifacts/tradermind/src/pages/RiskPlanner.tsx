@@ -163,8 +163,8 @@ export default function RiskPlanner() {
               </div>
               <div className="space-y-0.5">
                 <p className="text-muted-foreground">افت فعلی</p>
-                <p className={`font-semibold tabular-nums ${briefingData.currentDrawdownPct > (briefingData.maxDrawdownLimit ?? 100) * 0.8 ? 'text-amber-500' : ''}`}>
-                  {briefingData.currentDrawdownPct.toFixed(1)}%
+                <p className={`font-semibold tabular-nums ${briefingData.currentDrawdownPct !== null && briefingData.currentDrawdownPct > (briefingData.maxDrawdownLimit ?? 100) * 0.8 ? 'text-amber-500' : ''}`}>
+                  {briefingData.currentDrawdownPct !== null ? `${briefingData.currentDrawdownPct.toFixed(1)}%` : '—'}
                 </p>
               </div>
             </div>

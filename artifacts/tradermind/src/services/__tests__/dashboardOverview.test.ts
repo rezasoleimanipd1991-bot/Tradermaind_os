@@ -15,7 +15,6 @@ describe('computeOverview', () => {
     const o = computeOverview([]);
     expect(o.kpis.winRate).toBeNull();
     expect(o.kpis.profitFactor).toBeNull();
-    expect(o.kpis.maxDrawdownPct).toBeNull();
     expect(o.kpis.expectancyR).toBeNull();
     expect(o.equity).toEqual([]);
     expect(o.bestSymbol).toBeNull();
@@ -35,17 +34,6 @@ describe('computeOverview', () => {
     expect(o.kpis.expectancyR).toBeCloseTo(0.625);
     expect(o.distribution).toEqual({ wins: 2, losses: 2, breakeven: 0, total: 4 });
     expect(o.equity.map((p) => p.equity)).toEqual([200, 100, 400, 250]);
-  });
-
-  it('max drawdown is measured from the equity peak', () => {
-    const o = computeOverview([
-      mk({ profitLoss: 400 }),
-      mk({ profitLoss: -100, result: 'loss' }),
-      mk({ profitLoss: -100, result: 'loss' }),
-      mk({ profitLoss: 50 }),
-    ]);
-    expect(o.kpis.maxDrawdownAbs).toBe(200);
-    expect(o.kpis.maxDrawdownPct).toBeCloseTo(50);
   });
 
   it('subtracts fees/commission/spread (net basis)', () => {
